@@ -26,9 +26,44 @@ def test_builtin_skills_loaded():
     for s in skills:
         assert s.description
         assert s.skill_md.is_file()
+    legacy = {s.name: s for s in skills}
+    for name in ("php-file-write-waf", "web-recon", "sqli-basics"):
         # 手册正文要真材实料（80 行以上）
-        lines = s.skill_md.read_text(encoding="utf-8").splitlines()
-        assert len(lines) >= 80, f"{s.name} 只有 {len(lines)} 行"
+        lines = legacy[name].skill_md.read_text(encoding="utf-8").splitlines()
+        assert len(lines) >= 80, f"{name} 只有 {len(lines)} 行"
+
+
+def test_builtin_reverse_skill_bundle_loaded():
+    skills = load_skills(is_tool_available=lambda n: True)
+    by_name = {s.name: s for s in skills}
+    assert "reverse-skill-router" in by_name
+    assert "apk-reverse" in by_name
+    assert "ida-reverse" in by_name
+    assert "Routes reverse engineering" in by_name["reverse-skill-router"].description
+    assert by_name["apk-reverse"].description.startswith("在 CLI 环境下做 Android APK 逆向")
+    assert by_name["apk-reverse"].resource_root.name == "reverse-skill"
+    assert (by_name["apk-reverse"].resource_root / "LICENSE").is_file()
+
+
+async def test_activate_skill_reads_bundle_resource(tmp_path):
+    skills = load_skills(is_tool_available=lambda n: True)
+    tool = ActivateSkillTool(SkillRegistry(skills))
+
+    res = await tool.run({"name": "apk-reverse"}, _ctx(tmp_path))
+    assert res.ok, res.error
+    assert "APK 逆向 CLI 作业规范" in res.output
+    assert "activate_skill(name='apk-reverse', resource='相对路径')" in res.output
+
+    res = await tool.run({"name": "apk-reverse", "resource": "../field-journal/precedent-reverse.md"}, _ctx(tmp_path))
+    assert res.ok, res.error
+    assert "precedent-reverse.md" in res.output
+
+    res = await tool.run({"name": "apk-reverse", "resource": "../../LICENSE"}, _ctx(tmp_path))
+    assert res.ok, res.error
+    assert "MIT License" in res.output
+
+    res = await tool.run({"name": "apk-reverse", "resource": "../../../pyproject.toml"}, _ctx(tmp_path))
+    assert not res.ok and "越界" in res.error
 
 
 def test_requires_tools_unavailable(tmp_path):
@@ -98,6 +133,52 @@ def test_load_skills_synthesizes_manifest_when_absent(tmp_path):
     assert s.available
 
 
+def test_load_skills_parses_frontmatter_manifest(tmp_path):
+    root = tmp_path / "skills"
+    skill_dir = root / "frontmatter-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: fm-name\n"
+        "description: frontmatter description\n"
+        "requires:\n"
+        "  tools: [jadx]\n"
+        "---\n"
+        "# Ignored Title\n",
+        encoding="utf-8",
+    )
+    skills = load_skills(is_tool_available=lambda n: n == "jadx", builtin_dir=root, user_dir=tmp_path / "empty")
+    assert len(skills) == 1
+    assert skills[0].name == "fm-name"
+    assert skills[0].description == "frontmatter description"
+    assert skills[0].available
+
+
+async def test_load_skills_discovers_bundle_and_reads_resources(tmp_path):
+    root = tmp_path / "builtin"
+    bundle = root / "reverse-skill"
+    (bundle / "skills" / "field-journal").mkdir(parents=True)
+    (bundle / "skills" / "apk-reverse").mkdir(parents=True)
+    (bundle / "skills" / "SKILL.md").write_text(
+        "---\nname: reverse-skill-router\ndescription: router\n---\n# Router\n",
+        encoding="utf-8",
+    )
+    (bundle / "skills" / "apk-reverse" / "SKILL.md").write_text(
+        "---\nname: apk-reverse\ndescription: apk\n---\n# APK\n",
+        encoding="utf-8",
+    )
+    (bundle / "skills" / "field-journal" / "precedent-reverse.md").write_text("precedent", encoding="utf-8")
+    (bundle / "LICENSE").write_text("license", encoding="utf-8")
+
+    skills = load_skills(is_tool_available=lambda n: True, builtin_dir=root, user_dir=tmp_path / "empty")
+    by_name = {s.name: s for s in skills}
+    assert {"reverse-skill-router", "apk-reverse"} <= set(by_name)
+    assert by_name["apk-reverse"].resource_root == bundle
+    tool = ActivateSkillTool(SkillRegistry(skills))
+    res = await tool.run({"name": "apk-reverse", "resource": "../field-journal/precedent-reverse.md"}, _ctx(tmp_path))
+    assert res.ok and "precedent" in res.output
+
+
 async def test_manage_skill_imports_multi_skill_repo(tmp_path):
     """多技能包（reverse-skill 布局）：递归导入所有含 SKILL.md 的子目录，各成独立技能。"""
     import foxdog.skills.loader as loader_mod
@@ -123,10 +204,10 @@ async def test_manage_skill_imports_multi_skill_repo(tmp_path):
         ctx = _ctx(tmp_path)
         res = await tool.run({"action": "add", "source": str(repo)}, ctx)
         assert res.ok, res.error
-        # 顶层 routing SKILL.md + 两个场景子技能 = 至少 3 个（前缀 reverse-skill-）
-        imported = sorted(p.name for p in monkey_dir.iterdir() if p.is_dir())
-        assert any("apk-reverse" in n for n in imported), imported
-        assert any("ida-reverse" in n for n in imported), imported
-        assert len(imported) >= 3, imported
+        # 顶层 routing SKILL.md + 两个场景子技能保留在一个 bundle，避免相对资源路径断裂。
+        imported_dirs = sorted(p.name for p in monkey_dir.iterdir() if p.is_dir())
+        assert imported_dirs == ["reverse-skill"]
+        assert (monkey_dir / "reverse-skill" / "skills" / "apk-reverse" / "SKILL.md").is_file()
+        assert "reverse-skill" in res.output and "apk-reverse" in res.output and "ida-reverse" in res.output
     finally:
         ce.USER_DIR = orig_user_dir

@@ -46,7 +46,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         binwalk exiftool steghide foremost tshark tcpdump sleuthkit \
         pngcheck zbar-tools \
         `# Pwn / 逆向` \
-        radare2 patchelf \
+        radare2 patchelf jadx apktool android-tools-adb \
         `# 第二优先全家桶` \
         metasploit-framework ghidra \
         `# Ruby（zsteg/one_gadget 的 gem 宿主）` \
@@ -192,10 +192,30 @@ ARG CLAUDE_CODE_VERSION=2.1.220
 RUN npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && \
     claude --version
 
+# Muteki static knowledge base: docs/skills only, no credentials, state, DB, or sessions.
+ARG MUTEKI_KNOWLEDGE_REF=a585a2943a15efc4de78b00a385335fc9b1f23f1
+RUN set -e; \
+    tmp=/tmp/muteki-knowledge; \
+    dest=/opt/foxdog/knowledge/muteki; \
+    git init "$tmp"; \
+    cd "$tmp"; \
+    git remote add origin https://github.com/FishCodeTech/muteki.git; \
+    git fetch --depth 1 origin "$MUTEKI_KNOWLEDGE_REF"; \
+    git checkout --detach FETCH_HEAD; \
+    mkdir -p "$dest/eval_nyu" "$dest/docker"; \
+    for path in LICENSE README.md README_CN.md AGENTS.md ROADMAP.md SECURITY.md docs skills public_eval; do \
+      if [ -e "$path" ]; then cp -a "$path" "$dest/"; fi; \
+    done; \
+    if [ -d eval_nyu/_reports ]; then cp -a eval_nyu/_reports "$dest/eval_nyu/"; fi; \
+    if [ -f docker/worker/AGENTS.md ]; then cp -a docker/worker/AGENTS.md "$dest/docker/worker-AGENTS.md"; fi; \
+    printf 'Source: https://github.com/FishCodeTech/muteki\nCommit: %s\nLicense: AGPL-3.0, see LICENSE\nIncluded: README/AGENTS/docs/skills/evaluation reports only\n' "$MUTEKI_KNOWLEDGE_REF" > "$dest/SOURCE.txt"; \
+    rm -rf "$tmp"; \
+    chmod -R a+rX /opt/foxdog/knowledge
+
 # Agent-facing runtime guide, kept in the image for direct inspection.
 RUN mkdir -p /opt/foxdog
 COPY AGENTS.md /opt/foxdog/AGENTS.md
-RUN chmod 0444 /opt/foxdog/AGENTS.md
+RUN chmod -R a+rX /opt/foxdog && chmod 0444 /opt/foxdog/AGENTS.md
 
 # ---------------------------------------------------------------------------
 # 运行时用户与目录

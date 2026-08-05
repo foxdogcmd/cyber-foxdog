@@ -54,6 +54,12 @@ def test_bundled_runtime_guide_is_packaged():
     assert guide.is_file()
     dockerfile = bundled_image_dockerfile().read_text(encoding="utf-8")
     assert "COPY AGENTS.md /opt/foxdog/AGENTS.md" in dockerfile
+    assert "jadx apktool android-tools-adb" in dockerfile
+    assert "MUTEKI_KNOWLEDGE_REF" in dockerfile
+    assert "/opt/foxdog/knowledge/muteki" in dockerfile
+    guide_text = guide.read_text(encoding="utf-8")
+    assert "jadx" in guide_text and "apktool" in guide_text and "adb" in guide_text
+    assert "/opt/foxdog/knowledge/muteki" in guide_text
 
 
 async def test_local_runtime_delegates_to_existing_process_functions(tmp_path, monkeypatch):

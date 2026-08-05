@@ -27,13 +27,17 @@ docker build -f foxdog/runtime_image/Dockerfile.full -t foxdog-runtime:full foxd
 - **字典/密码**（apt）：seclists、john、hashcat
 - **URL/JS/资产**：katana、dalfox（GitHub release 二进制）、gau、waybackurls（go install，GOPATH=/opt/go）、nuclei-templates（clone 到 `/opt/nuclei-templates`）
 - **Misc/取证**（apt）：binwalk、exiftool、steghide、foremost、tshark、tcpdump、sleuthkit、pngcheck、zbar-tools；volatility3（venv pip，`vol`）
-- **Pwn/逆向**（apt + release + gem + venv）：radare2、patchelf、gdb+gef、checksec、strace、ltrace；pwninit（release 裸 ELF）；zsteg、one_gadget（gem）；ropper、ROPgadget（venv）
+- **Pwn/逆向/APK**（apt + release + gem + venv）：radare2、patchelf、jadx、apktool、android-tools-adb、gdb+gef、checksec、strace、ltrace；pwninit（release 裸 ELF）；zsteg、one_gadget（gem）；ropper、ROPgadget（venv）
 - **全家桶**：metasploit-framework、ghidra、maxima-sage，以及 conda-forge 的 SageMath 10.9（`sage`）
 - **Python exploit 栈**（`/opt/foxdog-venv`，PATH 置顶，与 Kali deb 版隔离）：pwntools、pycryptodome、sympy、gmpy2、z3-solver、capstone、angr、unicorn、r2pipe、frida-tools、yara-python、ropper、ROPgadget、volatility3
 
 Sage 安装在 `/opt/conda`。Miniforge 安装包固定版本和 SHA256，并通过 BuildKit cache mount + `curl --continue-at -` 断点续传；conda 包走清华 conda-forge 镜像并缓存到 `/opt/conda/pkgs`，网络失败后重建可复用已下载内容。
 
 PATH 顺序：`/opt/foxdog-venv/bin:/opt/go/bin:/usr/local/bin:...`。注意 `bash -lc` 登录 shell 会重置 PATH 导致 venv/go 工具看似 MISSING——foxdog 的 `docker exec` 走非 login shell，继承镜像 ENV，正常。
+
+镜像还把 Muteki 的静态 README/docs/skills/评测报告按固定 commit 抓取到
+`/opt/foxdog/knowledge/muteki`。这只是容器内离线资料库，不注入默认 prompt，
+也不进入黑板 facts；实际题目结论仍必须来自当前 run 的真实工具输出。
 
 When `[runtime].kind` is `"docker"` / `"docker-persistent"` and the configured
 image is absent, `runtime.auto_build = true` builds this full image automatically.

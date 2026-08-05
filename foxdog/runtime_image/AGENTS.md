@@ -24,11 +24,17 @@
 
 - 先用 `which <tool>` 或 `<tool> --help` 确认可用性，不要凭记忆断言缺工具。
 - 常见 Web 工具：`nmap`、`ffuf`、`feroxbuster`、`gobuster`、`whatweb`、`wafw00f`、`arjun`、`wpscan`、`nuclei`、`nikto`、`sqlmap`、`hydra`、`katana`、`gau`、`waybackurls`、`dalfox`。
-- 常见 Pwn / Rev 工具：`checksec`、`gdb` + GEF、`radare2`、`ROPgadget`、`ropper`、`one_gadget`、`pwninit`、`patchelf`、`strace`、`ltrace`、`ghidra`。
+- 常见 Pwn / Rev 工具：`checksec`、`gdb` + GEF、`radare2`、`ROPgadget`、`ropper`、`one_gadget`、`pwninit`、`patchelf`、`strace`、`ltrace`、`ghidra`、`jadx`、`apktool`、`adb`。
 - 常见 Crypto / Python 栈：`python3`、`pwntools`、`pycryptodome`、`sympy`、`gmpy2`、`z3`、`angr`、`unicorn`、`r2pipe`、`sage`。
 - 常见 Misc / Forensics 工具：`binwalk`、`exiftool`、`steghide`、`foremost`、`tshark`、`tcpdump`、`sleuthkit`、`pngcheck`、`zbarimg`、`vol`。
 - Nuclei templates 在 `/opt/nuclei-templates` 和 `/usr/local/share/nuclei-templates`。
 - PATH 已把 `/opt/foxdog-venv/bin` 和 `/opt/go/bin` 放前面。不要用 `bash -lc` 做工具探测；login shell 可能重置 PATH。
+
+## 离线资料
+
+- Muteki 静态知识库在 `/opt/foxdog/knowledge/muteki`，包含 README、AGENTS、docs、skills 和评测报告摘要，只作离线参考。
+- 资料库内容是线索，不是靶机事实；不要直接写入 facts。只有从当前题目真实输出中验证过的结论才进黑板 facts。
+- 资料库不包含 Muteki 运行状态、历史 session、黑板 DB、模型凭据或宿主 home。
 
 ## 工作方式
 

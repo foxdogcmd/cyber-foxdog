@@ -23,7 +23,7 @@ from ...config import ConfigStore
 from ...llm.client import ModelEndpoint, is_deepseek_endpoint
 from ...llm.model_catalog import fetch_model_ids
 from ...swarm.claude_config import ClaudeConfigError, default_claude_settings_path, load_claude_code_env
-from ...skills.loader import USER_DIR
+from ...skills.loader import USER_DIR, _synth_manifest
 from .. import Tool, ToolAccess, ToolContext, ToolResult
 
 DEEPSEEK_MODELS_URL = "https://api.deepseek.com/models"
@@ -513,6 +513,34 @@ class ManageSkillTool(_StoreTool):
                 continue
         return found
 
+    @staticmethod
+    def _repo_copy_ignores(dir_path: str, names: list[str]) -> set[str]:
+        del dir_path
+        ignored = {".git", ".hg", ".svn", "__pycache__", ".pytest_cache", "node_modules", ".venv", "venv"}
+        ignored.update(
+            name for name in names
+            if name.endswith((".pyc", ".pyo", ".log", ".db", ".sqlite", ".sqlite3"))
+        )
+        return ignored
+
+    @staticmethod
+    def _bundle_root(root: Path, skill_dirs: list[Path]) -> Path | None:
+        """Return root when this is a multi-skill bundle with shared resources."""
+        bundle_skills = root / "skills"
+        if len(skill_dirs) <= 1 or not (bundle_skills / "SKILL.md").is_file():
+            return None
+        try:
+            return root if all(bundle_skills in d.parents or d == bundle_skills for d in skill_dirs) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _display_skill_name(skill_dir: Path) -> str:
+        try:
+            return _synth_manifest(skill_dir, skill_dir / "SKILL.md").name
+        except Exception:  # noqa: BLE001
+            return skill_dir.name
+
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         a = self.parse_args(args)
         USER_DIR.mkdir(parents=True, exist_ok=True)
@@ -549,6 +577,19 @@ class ManageSkillTool(_StoreTool):
             skill_dirs = self._discover_skills(root)
             if not skill_dirs:
                 return ToolResult(ok=False, error="source 中未找到任何含 SKILL.md 的技能目录")
+
+            bundle_root = self._bundle_root(root, skill_dirs)
+            if bundle_root is not None:
+                bundle_name = self._safe_name(a.name or repo_label)
+                target = USER_DIR / bundle_name
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(bundle_root, target, ignore=self._repo_copy_ignores)
+                imported = [self._display_skill_name(d) for d in skill_dirs]
+                head = f"已添加技能包 {bundle_name}，包含 {len(imported)} 个技能（新任务自动发现）：\n"
+                body = "\n".join(f"- {n}" for n in imported[:40])
+                more = f"\n…共 {len(imported)} 个" if len(imported) > 40 else ""
+                return ToolResult(output=head + body + more)
 
             # 单技能：优先用 manifest name 或用户给的 name；多技能包：<repo>-<子目录>
             single = len(skill_dirs) == 1
