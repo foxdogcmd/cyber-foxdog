@@ -1,0 +1,25 @@
+name: john
+command: john
+short_description: 哈希/密钥口令破解（John the Ripper）
+description: |
+  John the Ripper 离线破解。hashfile 里每行一个哈希（或 shadow/unshadow 行）。
+  示例：hashfile=hashes.txt wordlist=/usr/share/wordlists/rockyou.txt。
+  指定格式：flags="--format=raw-md5"；规则：flags="--rules"。
+  查看已破：additional_args="--show hashes.txt"。
+parameters:
+  - name: hashfile
+    type: string
+    required: true
+    mapping: positional
+    help: 哈希文件路径
+  - name: wordlist
+    type: string
+    mapping: flag
+    flag: "--wordlist"
+    help: 字典路径
+  - name: flags
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "--format=raw-md5"
+additional_args: true
+timeout: 1800

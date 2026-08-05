@@ -1,0 +1,19 @@
+name: binwalk
+command: binwalk
+short_description: 固件/文件嵌套内容分析与提取（binwalk）
+description: |
+  binwalk 分析文件中嵌套的已知内容（压缩包、文件系统、图片尾巴藏数据）。
+  示例：file=firmware.bin 只扫描；提取：flags="-Me"（递归提取到 _file.extracted）。
+  熵分析（找加密段）：flags="-E"。
+parameters:
+  - name: file
+    type: string
+    required: true
+    mapping: positional
+    help: 目标文件路径（工作区内）
+  - name: flags
+    type: string
+    mapping: combined
+    help: 选项串，如 "-Me" / "-E"
+additional_args: true
+timeout: 300

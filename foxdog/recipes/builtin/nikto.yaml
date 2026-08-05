@@ -1,0 +1,21 @@
+name: nikto
+command: nikto
+short_description: Web 服务器漏洞/配置扫描（nikto）
+description: |
+  nikto Web 服务器扫描：危险文件、过时组件、配置错误。
+  示例：host=http://target:8080。
+  指定 CGI 目录：flags="-Cgidirs /cgi-bin/"；调优只跑某类：flags="-Tuning 123"。
+  输出较吵，关注 + OSVDB 开头的命中行。
+parameters:
+  - name: host
+    type: string
+    required: true
+    mapping: flag
+    flag: "-h"
+    help: 目标 URL 或 host
+  - name: flags
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 1200

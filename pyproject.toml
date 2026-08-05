@@ -1,0 +1,39 @@
+[project]
+name = "foxdog"
+version = "0.1.0"
+description = "CTF 自动解题 agent CLI（M1 骨架）"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.40",
+    "anthropic>=0.40",
+    "pydantic>=2",
+    "typer>=0.12",
+    "rich>=13",
+    "httpx>=0.27",
+    "PyYAML>=6",
+    "textual>=1.0",
+    "mcp>=1.8",
+    "pyperclip>=1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+foxdog = "foxdog.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["foxdog"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# 本机 %TEMP%/pytest-of-* ACL 损坏时也能跑：basetemp 放项目内
+addopts = "--basetemp=.pytest-tmp"

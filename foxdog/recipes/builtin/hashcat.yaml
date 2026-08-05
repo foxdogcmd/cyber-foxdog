@@ -1,0 +1,30 @@
+name: hashcat
+command: hashcat
+short_description: GPU 哈希破解（hashcat）
+description: |
+  hashcat 离线破解。mode 为哈希类型编号：0=MD5, 100=SHA1, 1400=SHA256,
+  1000=NTLM, 1800=sha512crypt, 3200=bcrypt。
+  示例：mode=0 hashfile=hashes.txt wordlist=/usr/share/wordlists/rockyou.txt。
+  无字典纯爆破：additional_args="-a 3 ?l?l?l?l?l?l"。
+parameters:
+  - name: mode
+    type: integer
+    required: true
+    mapping: flag
+    flag: "-m"
+    help: 哈希类型编号（0=MD5, 100=SHA1, 1400=SHA256, 1000=NTLM...）
+  - name: hashfile
+    type: string
+    required: true
+    mapping: positional
+    help: 哈希文件路径
+  - name: wordlist
+    type: string
+    mapping: positional
+    help: 字典路径
+  - name: flags
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "--force -O"
+additional_args: true
+timeout: 1800

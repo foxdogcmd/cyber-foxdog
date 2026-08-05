@@ -1,0 +1,5 @@
+name: php-file-write-waf
+description: file_put_contents/文件写入类 WAF 绕过方法论——规则测绘、.user.ini、php://filter、session upload progress 竞争包含
+when: PHP 题存在文件写入点（file_put_contents/fwrite/move_uploaded_file），waf 过滤文件名或内容，需要写马 getshell 或读 flag
+requires:
+  tools: []

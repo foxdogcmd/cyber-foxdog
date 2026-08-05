@@ -1,0 +1,23 @@
+name: sqlmap
+command: sqlmap
+short_description: 自动化 SQL 注入检测与利用（sqlmap）
+description: |
+  sqlmap 自动注入。默认 --batch（全自动不交互）--random-agent。
+  示例：url="http://target/item.php?id=1"。
+  POST：additional_args='--data "user=a&pass=b"'。
+  拿库表：flags="--dbs" → flags="-D 库名 --tables" → flags="-D 库 -T 表 --dump"。
+  深度：flags="--level=3 --risk=2"；指定注入点：url 参数后加 * 。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 目标 URL（GET 注入点）
+  - name: flags
+    type: string
+    default: "--batch --random-agent"
+    mapping: combined
+    help: sqlmap 选项串
+additional_args: true
+timeout: 1800

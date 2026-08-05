@@ -1,0 +1,233 @@
+# 锁具体 digest 保证可复现（rolling:latest 每日漂移）。re-pin：
+#   docker pull kalilinux/kali-rolling:latest && docker images --digests
+# Last pinned: 2026-08-03
+FROM kalilinux/kali-rolling@sha256:3093a0bd1f1196f4b10ab8e4a671929a6cd0153768642e6aa20dfced5e4132c5
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    GOPATH=/opt/go \
+    PATH="/opt/foxdog-venv/bin:/opt/go/bin:/usr/local/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# foxdog-runtime:full —— 唯一正式 CTF/安全全家桶（Web/Pwn/Misc/Crypto/Reverse/Forensics）
+#
+# 旧的 headless/精选 :latest 变体已停用；本 Dockerfile 不装 kali-linux-headless，
+# 改用品类明确、版本可控的清单，
+# 避免元包拖进 AD/云/企业内网套件（netexec/responder/bloodhound 等跑题面）。
+#
+# 网络兜底：http.kali.org 重定向器偶尔指到不可达镜像（实测 wane.kr 拒连、
+# neusoft DNS 失败）——安装失败时把 sources 切到 aliyun、tuna 镜像重试。
+# ---------------------------------------------------------------------------
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    printf 'Acquire::Retries "8";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Queue-Mode "host";\nAcquire::IndexTargets::deb::Contents-deb::DefaultEnabled "false";\nAcquire::IndexTargets::deb::Contents-deb-legacy::DefaultEnabled "false";\n' \
+      > /etc/apt/apt.conf.d/99foxdog-runtime && \
+    for MIRROR in "http://mirrors.aliyun.com/kali" "http://mirrors.tuna.tsinghua.edu.cn/kali" "http://http.kali.org/kali"; do \
+      sed -i "s|^URIs: .*|URIs: $MIRROR|" /etc/apt/sources.list.d/kali.sources 2>/dev/null || true; \
+      sed -i "s|^deb[-a-z]* .*//[^ ]* kali-rolling|deb $MIRROR kali-rolling|" /etc/apt/sources.list 2>/dev/null || true; \
+      apt-get update && \
+      apt-get install -y --no-install-recommends \
+        `# 基础运行时与网络工具` \
+        bash ca-certificates curl wget git jq ripgrep file \
+        unzip p7zip-full xz-utils openssl \
+        procps util-linux sudo iproute2 dnsutils \
+        openssh-client sshpass netcat-traditional ncat socat \
+        binutils gdb checksec strace ltrace \
+        `# Web 扫描 / 枚举` \
+        nmap ffuf gobuster sqlmap hydra nikto \
+        feroxbuster whatweb wafw00f arjun wpscan nuclei seclists \
+        `# 密码 / 哈希` \
+        john hashcat \
+        `# Misc / 取证` \
+        binwalk exiftool steghide foremost tshark tcpdump sleuthkit \
+        pngcheck zbar-tools \
+        `# Pwn / 逆向` \
+        radare2 patchelf \
+        `# 第二优先全家桶` \
+        metasploit-framework ghidra \
+        `# Ruby（zsteg/one_gadget 的 gem 宿主）` \
+        ruby ruby-dev \
+        `# Go（gau 无预编译二进制，需 go install）` \
+        golang \
+        `# Python 与 venv 基建` \
+        python3 python-is-python3 python3-pip python3-venv nodejs npm \
+        `# 编译依赖（部分 pip/gem 原生扩展需要）` \
+        build-essential libssl-dev libffi-dev zlib1g-dev \
+        libgmp-dev libmpc-dev libmpfr-dev && \
+      break; \
+      if [ "$MIRROR" = "http://http.kali.org/kali" ]; then exit 1; fi; \
+    done
+
+# sagemath：Kali rolling 当前无 sagemath 主元包（实测仅 sagemath-database-*）。
+# 真 Sage 走 conda-forge（SageMath 官方推荐路线；apt 缺失期间唯一可靠途径），
+# 装到 /opt/conda，sage 二进制 symlink 上 PATH。~2-3G、慢。借鉴 muteki：
+# miniforge 安装包放进 BuildKit cache mount，用 curl 断点续传；网络中断或
+# 整次 build 失败后都能从已下载字节继续。校验 SHA256 后才以 root 执行，
+# cache mount 内容不会进入最终镜像层。
+# conda 调重试次数 + 5 次安装重试循环，网络抖动不至于整层作废。
+# re-pin：改 MINIFORGE_VERSION 后重新下载安装包 `shasum -a 256`。
+# 注：miniforge 装到 /opt/conda-base（独立前缀），sage 装到 /opt/conda。
+# 两个前缀分开后，Sage 环境写入 /opt/conda；conda 实际的包缓存目录
+# /opt/conda-base/pkgs 则挂 BuildKit cache mount，下载/解压包不会进入最终镜像层，
+# 失败重建也能直接复用。clean 只删 tarballs/index（-t -i），保留已解压包。
+ARG MINIFORGE_VERSION=26.3.2-3
+ARG MINIFORGE_SHA256=848194851a98903134187fbb4ab50efe87b003e0c0f808f97644b7524a62bf2c
+# conda-forge 官方 CDN 在本网络下对 sage 这批大文件每次 ~50s 必断（IncompleteRead，
+# 实测 5 次重试全部同型失败，conda 不支持单包断点续传）。改用清华 tuna 的
+# conda-forge 完整镜像（含包本体，已验证可达）：channel_alias 指到 tuna，依赖解析
+# 出的包 URL 随之落 tuna 而非 conda.anaconda.org。
+ARG CONDA_CF=https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
+RUN --mount=type=cache,target=/var/cache/foxdog-downloads,sharing=locked \
+    installer="/var/cache/foxdog-downloads/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh"; \
+    ok=0; \
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+      if curl -fL --connect-timeout 30 --max-time 300 --retry 2 --retry-delay 2 \
+          --retry-all-errors --continue-at - -o "$installer" \
+          "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh"; then \
+        if echo "${MINIFORGE_SHA256}  $installer" | sha256sum -c -; then ok=1; break; fi; \
+        rm -f "$installer"; \
+      fi; \
+      echo "miniforge download attempt $i incomplete, resuming..."; sleep 5; \
+    done; \
+    [ "$ok" = 1 ] && \
+    bash "$installer" -b -p /opt/conda-base && \
+    ln -s /opt/conda-base/bin/conda /usr/local/bin/conda
+RUN --mount=type=cache,target=/opt/conda-base/pkgs,sharing=locked \
+    conda config --set remote_max_retries 10 && \
+    conda config --set remote_connect_timeout_secs 30 && \
+    conda config --set remote_read_timeout_secs 120 && \
+    for i in 1 2 3 4 5; do \
+      conda create -y -p /opt/conda --override-channels -c "${CONDA_CF}" sage && break || \
+      { echo "conda install attempt $i failed, retrying..."; sleep 10; }; \
+    done && \
+    conda list -p /opt/conda sage | grep -qi '^sage ' && \
+    test -x /opt/conda/bin/sage && \
+    conda clean -ti -y && \
+    ln -sf /opt/conda/bin/sage /usr/local/bin/sage
+
+# maxima-sage：轻量 CAS 补充（sage 之外的快速符号计算，体积小）。失败不阻塞。
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    (apt-get install -y --no-install-recommends maxima-sage || true)
+
+# gef：kali 无 gdb-gef 稳定包，按官方 git 方式安装
+RUN git clone --depth 1 https://github.com/hugsy/gef.git /opt/gef && \
+    printf 'source /opt/gef/gef.py\n' > /etc/skel/.gdbinit
+
+# ---------------------------------------------------------------------------
+# Go 系 Web/资产工具
+#   katana / dalfox 走 GitHub release 预编译二进制；
+#   gau 无官方二进制，go install（golang 已装，GOPATH=/opt/go 已入 PATH）。
+#   nuclei 本体走 apt；templates 单独 clone 到固定路径。
+# ---------------------------------------------------------------------------
+ARG KATANA_VERSION=v1.6.1
+ARG DALFOX_VERSION=v3.2.0
+RUN set -e; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) goarch=amd64; dalfox_arch=x86_64 ;; \
+      arm64) goarch=arm64; dalfox_arch=aarch64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    cd /tmp; \
+    curl -fsSL "https://github.com/projectdiscovery/katana/releases/download/${KATANA_VERSION}/katana_${KATANA_VERSION#v}_linux_${goarch}.zip" -o katana.zip && \
+      unzip -q katana.zip katana -d /usr/local/bin && rm katana.zip; \
+    curl -fsSL "https://github.com/hahwul/dalfox/releases/download/${DALFOX_VERSION}/dalfox-${DALFOX_VERSION}-linux-${dalfox_arch}.tar.gz" -o dalfox.tgz && \
+      tar -xzf dalfox.tgz -C /tmp && \
+      mv "/tmp/dalfox-${DALFOX_VERSION}-linux-${dalfox_arch}/dalfox" /usr/local/bin/dalfox && \
+      chmod +x /usr/local/bin/dalfox && \
+      rm -rf dalfox.tgz "/tmp/dalfox-${DALFOX_VERSION}-linux-${dalfox_arch}"
+
+# waybackurls / gau 走 go install（版本固定，GOPATH 已入 PATH）
+ARG WAYBACKURLS_VERSION=v0.1.0
+ARG GAU_VERSION=v2.2.4
+RUN go install github.com/tomnomnom/waybackurls@${WAYBACKURLS_VERSION} && \
+    go install github.com/lc/gau/v2/cmd/gau@${GAU_VERSION} || \
+    go install github.com/tomnomnom/gau@${GAU_VERSION}
+
+RUN git clone --depth 1 https://github.com/projectdiscovery/nuclei-templates.git /opt/nuclei-templates && \
+    ln -sfn /opt/nuclei-templates /usr/local/share/nuclei-templates
+
+# ---------------------------------------------------------------------------
+# Ruby gem 工具：zsteg / one_gadget
+# ---------------------------------------------------------------------------
+RUN gem install --no-document zsteg one_gadget
+
+# ---------------------------------------------------------------------------
+# pwninit：GitHub release 裸 ELF（非 tar），直接落 /usr/local/bin
+# ---------------------------------------------------------------------------
+ARG PWNINIT_VERSION=3.3.3
+RUN curl -fsSL "https://github.com/io12/pwninit/releases/download/${PWNINIT_VERSION}/pwninit" -o /usr/local/bin/pwninit && \
+    chmod +x /usr/local/bin/pwninit
+
+# ---------------------------------------------------------------------------
+# Python exploit 栈：/opt/foxdog-venv（与 Kali/Debian 自带 Python 隔离）
+# PATH 已把 venv/bin 放最前，python/pip 默认指向 venv。
+# volatility3 / ropper 走 venv pip（apt 无稳定包）。
+# ---------------------------------------------------------------------------
+# 网络兜底：pypi 大 wheel（angr/frida/volatility3 等）从官方源下载偶发
+# IncompleteRead 断连（同 apt/conda 的网络抖动）。pip 单次 install 无层内重试，
+# 故对整层做 retry 循环（venv/pip 已缓存已下包，重跑增量补齐）；并优先走 tuna
+# 的 pypi 镜像（国内、完整镜像包本体），官方源作回退。
+RUN python3 -m venv /opt/foxdog-venv && \
+    /opt/foxdog-venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    for i in 1 2 3 4 5; do \
+      /opt/foxdog-venv/bin/pip install --no-cache-dir \
+        --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+        requests httpx beautifulsoup4 lxml \
+        pwntools pycryptodome sympy gmpy2 z3-solver \
+        capstone ropgadget r2pipe \
+        angr unicorn frida-tools yara-python \
+        ropper volatility3 && break || \
+      { echo "venv pip install attempt $i failed, retrying..."; sleep 8; }; \
+    done
+
+# Claude Code CLI lives in the image; credentials are injected per docker exec.
+ARG CLAUDE_CODE_VERSION=2.1.220
+RUN npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && \
+    claude --version
+
+# Agent-facing runtime guide, kept in the image for direct inspection.
+RUN mkdir -p /opt/foxdog
+COPY AGENTS.md /opt/foxdog/AGENTS.md
+RUN chmod 0444 /opt/foxdog/AGENTS.md
+
+# ---------------------------------------------------------------------------
+# 运行时用户与目录
+# ---------------------------------------------------------------------------
+RUN useradd --create-home --shell /bin/bash foxdog && \
+    printf 'foxdog ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/foxdog && \
+    chmod 0440 /etc/sudoers.d/foxdog && \
+    printf 'source /opt/gef/gef.py\n' > /home/foxdog/.gdbinit && \
+    mkdir -p /workspace/work && chown -R foxdog:foxdog /workspace && \
+    chmod -R a+rX /opt/foxdog-venv /opt/go /opt/nuclei-templates
+
+# auto-sudo 包装器（借鉴 muteki）：模型常直接敲 `apt-get install ...` 不加 sudo。
+# /usr/local/bin 优先级高于 /usr/bin，非 root 调用时自动 `sudo -n` 重试，
+# 省一堆 "Permission denied" 失败 turn。
+RUN cat > /usr/local/sbin/foxdog-auto-sudo <<'EOF' && \
+    chmod +x /usr/local/sbin/foxdog-auto-sudo && \
+    ln -sf /usr/local/sbin/foxdog-auto-sudo /usr/local/bin/apt-get && \
+    ln -sf /usr/local/sbin/foxdog-auto-sudo /usr/local/bin/apt && \
+    ln -sf /usr/local/sbin/foxdog-auto-sudo /usr/local/bin/dpkg
+#!/bin/sh
+name="$(basename "$0")"
+real="/usr/bin/$name"
+if [ "$(id -u)" = "0" ]; then
+  exec "$real" "$@"
+fi
+exec sudo -n "$real" "$@"
+EOF
+
+LABEL org.opencontainers.image.title="foxdog-runtime" \
+      org.opencontainers.image.description="Credential-free Kali/CTF command runtime for FoxDog (full variant)" \
+      org.opencontainers.image.variant="full"
+
+USER foxdog
+WORKDIR /workspace/work
+CMD ["sleep", "infinity"]

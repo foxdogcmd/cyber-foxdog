@@ -1,0 +1,5 @@
+name: sqli-basics
+description: SQL 注入判断与利用流程——联合/报错/布尔盲/时间盲、常见过滤手工 bypass、sqlmap 档位
+when: 发现参数与数据库交互（id/user/搜索框/登录框），怀疑或已确认 SQL 注入
+requires:
+  tools: []

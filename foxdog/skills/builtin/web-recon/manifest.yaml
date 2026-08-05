@@ -1,0 +1,5 @@
+name: web-recon
+description: Web 题侦察方法论——指纹、源码泄露（.git/.svn/.swp/.bak）、备份 fuzz、目录爆破、常见 flag 位置
+when: 开局面对一个 HTTP 靶机，需要摸清入口、技术栈、隐藏路径和信息泄露
+requires:
+  tools: []

@@ -1,0 +1,32 @@
+name: gobuster
+command: gobuster
+short_description: 目录/DNS/vhost 爆破（gobuster）
+description: |
+  gobuster 目录爆破。默认子命令 dir。
+  示例：url=http://target wordlist=/usr/share/wordlists/dirb/common.txt，
+  扩展名：flags="-x php,txt,bak,html"。
+  DNS 子域名：mode="dns", flags="-d example.com"。
+parameters:
+  - name: mode
+    type: string
+    default: "dir"
+    mapping: combined
+    help: 子命令（dir/dns/vhost/fuzz）
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 目标 URL
+  - name: wordlist
+    type: string
+    required: true
+    mapping: flag
+    flag: "-w"
+    help: 字典路径
+  - name: flags
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "-x php,bak -t 50"
+additional_args: true
+timeout: 600

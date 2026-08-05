@@ -1,0 +1,27 @@
+name: dirsearch
+command: dirsearch
+short_description: Web 目录/文件爆破（dirsearch）
+description: |
+  dirsearch 目录爆破（Python，Windows 友好）。默认扩展名 php,html,js,bak,txt,zip。
+  示例：url=http://target:8080。
+  自定义字典：wordlist=/path/list.txt；排除状态码：flags="--exclude-status=404,400"。
+  递归：flags="-r --recursion-depth=2"。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 目标 URL
+  - name: wordlist
+    type: string
+    mapping: flag
+    flag: "-w"
+    help: 字典路径（缺省用 dirsearch 自带）
+  - name: flags
+    type: string
+    default: "-e php,html,js,bak,txt,zip --timeout=5"
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 900

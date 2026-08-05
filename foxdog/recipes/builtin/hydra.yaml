@@ -1,0 +1,31 @@
+name: hydra
+command: hydra
+short_description: 在线口令爆破（hydra）
+description: |
+  hydra 在线爆破。target 形如 ssh://10.10.10.5、ftp://10.10.10.5:2121。
+  示例：user=admin wordlist=/usr/share/wordlists/rockyou.txt target=ssh://10.10.10.5。
+  用户名字典：flags="-L users.txt"；HTTP 表单：
+  target=10.10.10.5, additional_args='http-post-form "/login:user=^USER^&pass=^PASS^:F=invalid"'。
+  注意：CTF 靶机别开太大线程，flags="-t 4" 起步。
+parameters:
+  - name: target
+    type: string
+    required: true
+    mapping: positional
+    help: 服务目标，如 ssh://10.10.10.5
+  - name: user
+    type: string
+    mapping: flag
+    flag: "-l"
+    help: 单用户名
+  - name: wordlist
+    type: string
+    mapping: flag
+    flag: "-P"
+    help: 密码字典路径
+  - name: flags
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 900

@@ -1,0 +1,27 @@
+name: ffuf
+command: ffuf
+short_description: Web 目录/参数/vhost fuzz（ffuf）
+description: |
+  ffuf Web fuzz。url 里用 FUZZ 关键字标注入点，如 http://target/FUZZ。
+  示例：url=http://target/FUZZ wordlist=/usr/share/wordlists/dirb/common.txt。
+  过滤噪音：extra="-fc 404" 或 "-fs 1234"；递归：extra="-recursion -recursion-depth 2"。
+  也可 fuzz 参数名：url=http://target/?FUZZ=1。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 含 FUZZ 关键字的 URL
+  - name: wordlist
+    type: string
+    required: true
+    mapping: flag
+    flag: "-w"
+    help: 字典路径
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "-fc 404 -t 50"
+additional_args: true
+timeout: 600
