@@ -129,7 +129,7 @@ class SetBudgetTool(_HostTool):
 class SetTaskOptionsArgs(BaseModel):
     target: str | None = Field(default=None, description="下一题靶机 URL/IP；传空字符串或 clear_target=true 可清空")
     flag_format: str | None = Field(default=None, description="下一题 flag 正则；传空字符串或 clear_flag_format=true 可清空")
-    workers: int | None = Field(default=None, ge=1, description="下一题 swarm worker 上限")
+    workers: int | None = Field(default=None, ge=1, description="下一题 swarm worker 上限；解题中则动态调整当前 swarm 上限")
     clear_target: bool = Field(default=False, description="true=清空下一题 target")
     clear_flag_format: bool = Field(default=False, description="true=清空下一题 flag_format")
 
@@ -148,9 +148,15 @@ class SetTaskOptionsTool(_HostTool):
         if a.clear_flag_format or a.flag_format is not None:
             self.host.opt_format = None if a.clear_flag_format else (a.flag_format or None)
             changes.append(f"flag_format={self.host.opt_format or '（未设置）'}")
+        dynamic_worker_limit = False
         if a.workers is not None:
-            self.host.opt_workers = int(a.workers)
-            changes.append(f"workers={self.host.opt_workers}")
+            setter = getattr(self.host, "_set_worker_limit", None)
+            if setter is not None:
+                dynamic_worker_limit, _previous = setter(int(a.workers))
+            else:
+                self.host.opt_workers = int(a.workers)
+            suffix = "（当前任务已动态生效）" if dynamic_worker_limit else ""
+            changes.append(f"workers={self.host.opt_workers}{suffix}")
         if changes:
             setattr(self.host, "_session_task_options_dirty", True)
         try:

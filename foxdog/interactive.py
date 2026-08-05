@@ -90,7 +90,7 @@ HELP_TEXT = """\
 不会用就 /setting 直接说需求（自然语言配置/指挥）。
 任务：
   /format <REGEX>     设下一任务 flag 格式  例：/format PCTF\\{[^{}]*\\}
-  /workers <N>        设下一任务 worker 数  例：/workers 4
+  /workers <N>        设置/动态修改 worker 上限  例：/workers 4
 配置：
   /model              查看/引导式配置模型（/model list 看当前，/model show 看全部端点及状态）
   /setting <要求>     对话式配置与指挥      例：/setting 拉题 42 / 续跑最近任务 / 预算 30 分钟
@@ -137,7 +137,7 @@ SETTING_SYSTEM = """\\
    set_platform（平台地址/worker 数）、set_runtime（local/Docker 工具环境）、
    configure_claude_code（容器 Claude + 本机 CC Switch 配置注入）、
    add/remove_mcp_server、set_agent（权限/步数/预算）、get_config 看现状；
-   set_task_options 设置本会话下一题 target/flag 格式/worker 数。
+   set_task_options 设置本会话下一题 target/flag 格式/worker 数；解题中修改 worker 会动态调整当前 swarm 上限。
 2. 指挥（解题中）：get_status 看任务/worker/token 状态、steer_team 指挥全体方向、
    kill_worker 终止某个 worker、suppress_intent 压制某个方向、set_budget 动态调预算；
    list_runs 查历史、resume_run 续跑、fetch_challenge 拉题到输入框。
@@ -702,7 +702,8 @@ class ChatApp(App):
             SlashCommand("/setting", "对话式配置与指挥", self._cmd_setting),
             SlashCommand("/board", "全屏黑板视图切换", self._cmd_board),
             SlashCommand("/mode", "切换权限模式 yolo|plan", self._cmd_mode),
-            SlashCommand("/workers", "设置下一任务 worker 数", self._cmd_workers),
+            SlashCommand("/workers", "设置/动态修改 worker 上限", self._cmd_workers),
+            SlashCommand("/worker", "设置/动态修改 worker 上限（别名）", self._cmd_workers),
             SlashCommand("/format", "设置下一任务 flag 格式正则", self._cmd_format),
             SlashCommand("/new", "清空对话历史开新会话", self._cmd_new),
   # /cancel removed — Esc cancels setup and overlays
@@ -1809,14 +1810,38 @@ class ChatApp(App):
         else:
             self._write_line("用法: /mode yolo|plan", "red")
 
+    def _set_worker_limit(self, workers: int) -> tuple[bool, int | None]:
+        """设置下一题上限；已有 swarm run 则同步调整当前 coordinator。"""
+        if workers < 1:
+            raise ValueError("workers must be >= 1")
+        self.opt_workers = workers
+        run = self.current_run
+        coordinator = getattr(run, "coordinator", None) if self.busy and run is not None else None
+        if coordinator is None:
+            return False, None
+        return True, coordinator.set_worker_limit(workers)
+
     def _cmd_workers(self, arg: str) -> None:
         if arg.isdigit() and int(arg) >= 1:
-            self.opt_workers = int(arg)
+            requested = int(arg)
+            dynamic, previous = self._set_worker_limit(requested)
             self._sync_board_sidebar()
             self._refresh_status()
-            self._write_line(f"下一任务 worker 数设为 {self.opt_workers}", "magenta")
+            if dynamic:
+                self._write_line(
+                    f"当前任务 worker 上限已从 {previous} 调整为 {requested}；"
+                    "已在运行的 worker 不会被强制终止，空槽会按新上限补齐。",
+                    "magenta",
+                )
+            elif self.busy:
+                self._write_line(
+                    f"worker 上限已记录为 {requested}；当前任务尚未进入可动态调度状态，下一任务生效。",
+                    "yellow",
+                )
+            else:
+                self._write_line(f"下一任务 worker 数设为 {self.opt_workers}", "magenta")
         else:
-            self._write_line("用法: /workers N（≥1）", "red")
+            self._write_line("用法: /workers N 或 /worker N（≥1）", "red")
 
     def _cmd_target(self, arg: str) -> None:
         self.opt_target = arg or None

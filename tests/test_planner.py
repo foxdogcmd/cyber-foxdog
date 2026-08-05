@@ -232,6 +232,10 @@ async def test_user_worker_limit_ignores_planner_desired_workers(tmp_path):
     await coord._plan_once()
     assert coord.workers == 4
     assert coord.desired_workers == 4
+    assert coord.set_worker_limit(2) == 4
+    assert coord.workers == 2 and coord.desired_workers == 2
+    assert coord.set_worker_limit(6) == 2
+    assert coord.workers == 6 and coord.desired_workers == 6
     board.close()
 
 

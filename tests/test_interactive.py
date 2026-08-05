@@ -136,6 +136,48 @@ async def test_slash_commands(tmp_path, monkeypatch):
         await pilot.pause(0.5)
 
 
+async def test_workers_command_dynamically_updates_active_swarm(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOXDOG_PROVIDER", "fake")
+    app = ChatApp(workspace=tmp_path, overrides=[], config_path=tmp_path / "c.toml")
+
+    class DynamicCoordinator:
+        workers = 2
+        desired_workers = 2
+
+        def set_worker_limit(self, workers: int) -> int:
+            previous = self.workers
+            self.workers = workers
+            self.desired_workers = workers
+            return previous
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        coordinator = DynamicCoordinator()
+        app.busy = True
+        app.current_run = SimpleNamespace(
+            coordinator=coordinator,
+            started=time.monotonic(),
+            loop=SimpleNamespace(budget_state=None),
+            budget=SimpleNamespace(max_minutes=None),
+        )
+        _submit(app, "/workers 5")
+        await pilot.pause(0.2)
+        assert app.opt_workers == 5
+        assert coordinator.workers == 5 and coordinator.desired_workers == 5
+        assert "当前任务 worker 上限已从 2 调整为 5" in _timeline(app)
+
+        _submit(app, "/worker 1")
+        await pilot.pause(0.2)
+        assert app.opt_workers == 1
+        assert coordinator.workers == 1 and coordinator.desired_workers == 1
+        assert "已在运行的 worker 不会被强制终止" in _timeline(app)
+
+        app.busy = False
+        app.current_run = None
+        _submit(app, "/quit")
+        await pilot.pause(0.5)
+
+
 async def test_steer_during_solve(tmp_path, monkeypatch):
     """解题中提交 steer：drain 进下一轮 history（rollout 有 steer 记录）。"""
     monkeypatch.setenv("FOXDOG_PROVIDER", "fake")

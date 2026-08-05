@@ -116,6 +116,15 @@ class Coordinator:
         self._worker_tasks: dict[str, asyncio.Task] = {}
         self._worker_intents: dict[str, str] = {}
 
+    def set_worker_limit(self, workers: int) -> int:
+        """动态调整并发上限；降低时不主动终止已有 worker。"""
+        if workers < 1:
+            raise ValueError("workers must be >= 1")
+        previous = self.workers
+        self.workers = workers
+        self.desired_workers = workers
+        return previous
+
     def active_workers(self) -> list[tuple[str, str]]:
         """(worker_id, intent_id) 列表（copilot get_status 用）。"""
         return sorted(self._worker_intents.items())
