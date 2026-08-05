@@ -52,7 +52,7 @@ from .executor.background import BackgroundRegistry
 from .llm.messages import system_message, user_message
 from .protocol.types import Event
 from .runner import SessionContext, SolveRun, build_run, build_session, execute_run
-from .store.rollout import RunSummary, find_run_summary, list_run_summaries, read_records, replay_history
+from .store.rollout import RunSummary, find_run_summary, list_run_summaries, replay_history, replay_timeline
 from .tools import ToolContext, ToolRegistry
 from .tools.builtin.config_edit import register_config_tools
 from .tools.builtin.copilot import register_copilot_tools
@@ -167,6 +167,7 @@ _ACTIVITY_SPINNER = "⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓"
 _LEAKED_SGR_MOUSE_RE = re.compile(r"(?:\x1b)?\[<\d+;-?\d+;-?\d+[mM]")
 _CTRL_C_EXIT_WINDOW = 2.0
 _CTRL_C_DUPLICATE_WINDOW = 0.08
+_SUBMIT_DUPLICATE_WINDOW = 0.35
 _EVENT_PUMP_LIMIT = 256
 
 
@@ -203,6 +204,7 @@ class CommandInput(TextArea):
         super().__init__(*args, **kwargs)
         self._pastes: dict[int, str] = {}
         self._paste_seq = 0
+        self._last_paste_sig: tuple[str, float] | None = None
         self.password = False  # 兼容旧 Input API：True 时掩码显示（/model api_key）
 
     # ------------------------------------------------------------ 永久聚焦
@@ -257,9 +259,14 @@ class CommandInput(TextArea):
 
     # ------------------------------------------------------------ 长粘贴折叠
     async def _on_paste(self, event: events.Paste) -> None:
-        if event.text and len(event.text) > self.PASTE_FOLD_THRESHOLD:
+        text = event.text or ""
+        if text and self._is_duplicate_paste(text):
+            event.stop()
+            event.prevent_default()
+            return
+        if text and len(text) > self.PASTE_FOLD_THRESHOLD:
             self._paste_seq += 1
-            self._pastes[self._paste_seq] = event.text
+            self._pastes[self._paste_seq] = text
             token = f"[粘贴的文本#{self._paste_seq}]"
             if result := self._replace_via_keyboard(token, *self.selection):
                 self.move_cursor(result.end_location)
@@ -268,6 +275,14 @@ class CommandInput(TextArea):
             event.prevent_default()
             return
         await super()._on_paste(event)
+
+    def _is_duplicate_paste(self, text: str) -> bool:
+        """Suppress duplicate paste events emitted by some terminal frontends."""
+        sig = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()
+        now = time.monotonic()
+        last = self._last_paste_sig
+        self._last_paste_sig = (sig, now)
+        return bool(last and last[0] == sig and now - last[1] <= _SUBMIT_DUPLICATE_WINDOW)
 
     def expand_pastes(self, text: str) -> str:
         """提交前把占位符还原成真实粘贴内容；孤儿占位符（已被删改）保留原文。"""
@@ -677,6 +692,7 @@ class ChatApp(App):
         self._resume_picker_active = False
         self._resume_candidates: list[RunSummary] = []
         self._resume_from: Path | None = None
+        self._last_submit_sig: tuple[str, float] | None = None
         #: /model 连接测试器（测试可 monkeypatch）
         self.test_endpoint: Callable[[ModelEndpoint], Any] = _default_test_endpoint
         self._ac_visible = False
@@ -1083,52 +1099,35 @@ class ChatApp(App):
 
     def _render_replayed_history(self, item: RunSummary) -> int:
         """Display replayed main-agent rollout records before the resumed run starts."""
-        records = read_records(item.path / "rollout.jsonl")
+        records = replay_timeline(item.path / "rollout.jsonl")
         rows: dict[str, ToolCallRow] = {}
         rendered = 0
         self._write_line(f"── 续跑历史 {item.run_id} ──", "dim")
         for rec in records:
-            if rec.get("worker"):
-                continue
-            rtype = rec.get("type")
-            if rtype == "message":
-                msg = rec.get("message")
-                if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    content = str(msg.get("content") or "")
-                    if content.strip():
-                        self._write_agent_snapshot(content)
-                        rendered += 1
-            elif rtype == "tool_call":
-                for call in rec.get("calls") or []:
-                    if not isinstance(call, dict):
-                        continue
-                    call_id = str(call.get("id") or "")
-                    if not call_id:
-                        continue
-                    row = ToolCallRow(
-                        call_id,
-                        str(call.get("name") or "tool"),
-                        str(call.get("arguments") or ""),
-                    )
-                    rows[call_id] = row
-                    self._write_tool_snapshot(row)
-                    rendered += 1
-            elif rtype == "tool_result":
-                call_id = str(rec.get("call_id") or "")
+            if rec.kind == "assistant":
+                self._write_agent_snapshot(rec.content)
+                rendered += 1
+            elif rec.kind == "tool_call":
+                row = ToolCallRow(rec.call_id, rec.name, rec.arguments)
+                rows[rec.call_id] = row
+                self._write_tool_snapshot(row)
+                rendered += 1
+            elif rec.kind == "tool_result":
+                call_id = rec.call_id
                 row = rows.get(call_id)
                 if row is not None:
-                    row.ok = bool(rec.get("ok", True))
+                    row.ok = rec.ok
                     row.duration_ms = 0
-                    row.preview = str(rec.get("content") or "")
-                    row.error = str(rec.get("error") or "") or None
-                    row.handle = rec.get("handle") if isinstance(rec.get("handle"), str) else None
+                    row.preview = rec.content
+                    row.error = rec.error
+                    row.handle = rec.handle
                     if row.is_mounted:
                         row.set_result(row.ok, row.duration_ms, row.preview, row.error, row.handle)
                 else:
-                    mark = "✓" if rec.get("ok", True) else "✗"
+                    mark = "✓" if rec.ok else "✗"
                     self._write_line(
-                        f"{mark} {rec.get('name') or 'tool'} {str(rec.get('content') or '')[:120]}",
-                        "green" if rec.get("ok", True) else "red",
+                        f"{mark} {rec.name} {rec.content[:120]}",
+                        "green" if rec.ok else "red",
                     )
                 rendered += 1
         return rendered
@@ -1755,6 +1754,8 @@ class ChatApp(App):
         self._sync_input_height()
         if not text:
             return
+        if self._is_duplicate_submit(text):
+            return
         # /model 引导式配置流程中：输入是答案而非任务/命令
         if self._setup is not None:
             self._setup_input(text)
@@ -1775,6 +1776,23 @@ class ChatApp(App):
             self._write_line(CONFIG_HINT, "yellow")
             return
         self._solve_task = asyncio.create_task(self._run_task(text))
+
+    def _is_duplicate_submit(self, text: str) -> bool:
+        """Suppress duplicate submit events for the same buffer in the same UI state."""
+        if self._setup is not None:
+            mode = "setup"
+        elif self._setting_page and not text.startswith("/"):
+            mode = "setting"
+        elif self.busy:
+            mode = "steer"
+        else:
+            mode = "idle"
+        raw = f"{mode}\0{text}"
+        sig = hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
+        now = time.monotonic()
+        last = self._last_submit_sig
+        self._last_submit_sig = (sig, now)
+        return bool(last and last[0] == sig and now - last[1] <= _SUBMIT_DUPLICATE_WINDOW)
 
     def _dispatch_command(self, text: str) -> None:
         cmd, _, arg = text.partition(" ")

@@ -91,7 +91,7 @@ async def test_coordinator_multi_flag_no_cancel_until_all(tmp_path):
     registry.register(SleepTool(0.6))   # fake_sleep：拿第二面前的间隔
     registry.register(SleepTool(30.0))  # 复用同名注册会被覆盖——改用独立名
     registry._tools.pop("fake_sleep")
-    registry.register(type("S1", (SleepTool,), {"name": "sleep_short"})(0.6))
+    registry.register(type("S1", (SleepTool,), {"name": "sleep_short"})(2.0))
     registry.register(type("S2", (SleepTool,), {"name": "sleep_long"})(30.0))
 
     gate = FlagGate(ws, flag_format=r"flag\{[^{}]*\}", expected_flags=2)

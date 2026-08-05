@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,27 @@ class RunSummary:
     ts: float
     solved: bool = False
     flag: str = ""
+
+
+@dataclass(frozen=True)
+class ReplayItem:
+    """A main-agent timeline item materialized from rollout records."""
+
+    kind: Literal["assistant", "tool_call", "tool_result"]
+    content: str = ""
+    call_id: str = ""
+    name: str = ""
+    arguments: str = ""
+    ok: bool = True
+    error: str | None = None
+    handle: str | None = None
+
+
+def valid_run_id(run_id: str) -> bool:
+    """Return whether run_id is a safe single path component."""
+    if not _RUN_ID_RE.fullmatch(run_id):
+        return False
+    return run_id not in {".", ".."} and Path(run_id).name == run_id
 
 
 def runs_root(workspace: str | Path | None = None) -> Path:
@@ -149,6 +174,8 @@ def find_run_summary(workspace: str | Path | None, run_id: str | None) -> RunSum
     if not run_id:
         return summaries[-1]
     needle = run_id.strip()
+    if not valid_run_id(needle):
+        return None
     return next((item for item in summaries if item.run_id == needle), None)
 
 
@@ -171,6 +198,80 @@ def read_records(path: str | Path) -> list[dict[str, Any]]:
                 continue
             records.append(rec)
     return records
+
+
+def _tool_call_fields(call: dict[str, Any]) -> tuple[str, str, str]:
+    """Normalize OpenAI-style and legacy compact tool call shapes."""
+    call_id = str(call.get("id") or "")
+    function = call.get("function") if isinstance(call.get("function"), dict) else {}
+    name = str(call.get("name") or function.get("name") or "tool")
+    arguments = call.get("arguments", function.get("arguments", ""))
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments, ensure_ascii=False, default=str)
+    return call_id, name, arguments
+
+
+def replay_timeline(path: str | Path) -> list[ReplayItem]:
+    """Materialize main-agent rollout records into a compact human-readable timeline.
+
+    This is intentionally separate from ``replay_history``: history rebuilds the
+    provider conversation, while this preserves enough tool structure for TUI
+    resume display. Both functions consume the same filtered main-agent records.
+    """
+    items: list[ReplayItem] = []
+    seen_tool_call_records = False
+    pending_legacy_calls: list[ReplayItem] = []
+    for rec in read_records(path):
+        if rec.get("worker"):
+            continue
+        rtype = rec.get("type")
+        if rtype == "message":
+            msg = rec.get("message")
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = str(msg.get("content") or "")
+            if content.strip():
+                items.append(ReplayItem(kind="assistant", content=content))
+            # Old rollout fixtures sometimes only store tool_calls inside the
+            # assistant message. Keep them pending and drop them if a canonical
+            # tool_call record appears later.
+            for call in msg.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                call_id, name, arguments = _tool_call_fields(call)
+                if call_id:
+                    pending_legacy_calls.append(
+                        ReplayItem(kind="tool_call", call_id=call_id, name=name, arguments=arguments)
+                    )
+        elif rtype == "tool_call":
+            if pending_legacy_calls and not seen_tool_call_records:
+                pending_legacy_calls.clear()
+            seen_tool_call_records = True
+            for call in rec.get("calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                call_id, name, arguments = _tool_call_fields(call)
+                if call_id:
+                    items.append(ReplayItem(kind="tool_call", call_id=call_id, name=name, arguments=arguments))
+        elif rtype == "tool_result":
+            if pending_legacy_calls and not seen_tool_call_records:
+                items.extend(pending_legacy_calls)
+                pending_legacy_calls.clear()
+            call_id = str(rec.get("call_id") or "")
+            if not call_id:
+                continue
+            items.append(
+                ReplayItem(
+                    kind="tool_result",
+                    call_id=call_id,
+                    name=str(rec.get("name") or "tool"),
+                    content=str(rec.get("content") or ""),
+                    ok=bool(rec.get("ok", True)),
+                    error=str(rec.get("error") or "") or None,
+                    handle=rec.get("handle") if isinstance(rec.get("handle"), str) else None,
+                )
+            )
+    return items
 
 
 def replay_history(path: str | Path) -> list[dict[str, Any]]:

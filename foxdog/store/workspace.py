@@ -19,6 +19,8 @@ import time
 import uuid
 from pathlib import Path
 
+from .rollout import valid_run_id
+
 
 class Workspace:
     def __init__(
@@ -29,6 +31,8 @@ class Workspace:
     ) -> None:
         self.base = Path(base) if base else Path.cwd()
         self.run_id = run_id or time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        if not valid_run_id(self.run_id):
+            raise ValueError(f"invalid run_id: {self.run_id!r}")
         self.dir = self.base / ".foxdog-runs" / self.run_id
         self.cas_dir = self.dir / "cas"
         self.inputs_dir = self.dir / "inputs"

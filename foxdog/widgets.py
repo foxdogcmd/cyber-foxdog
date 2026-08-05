@@ -678,7 +678,7 @@ class AgentStreamBlock(Vertical):
 
     def _render_text(self, raw: str) -> Text:
         out = self._prefix()
-        out.append_text(agent_text(raw))
+        out.append_text(agent_text(raw.lstrip("\r\n")))
         return out
 
     def set_body(self, raw: str) -> None:

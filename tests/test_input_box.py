@@ -148,6 +148,35 @@ async def test_short_multiline_paste_goes_inline(tmp_path, monkeypatch):
         await pilot.pause(0.3)
 
 
+async def test_duplicate_paste_event_is_suppressed(tmp_path, monkeypatch):
+    """Some terminal frontends report the same paste twice; keep one copy."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        inp = app.query_one(CommandInput)
+        await inp._on_paste(events.Paste("abc\n"))
+        await inp._on_paste(events.Paste("abc\n"))
+        await pilot.pause(0.2)
+        assert inp.value == "abc\n"
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
+async def test_duplicate_submit_event_is_suppressed(tmp_path, monkeypatch):
+    """Repeated Enter submit events for the same buffer should not double-steer."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        app.busy = True
+        _submit(app, "同一条 steer")
+        _submit(app, "同一条 steer")
+        await pilot.pause(0.2)
+        assert app.steer.drain() == ["同一条 steer"]
+        app.busy = False
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
 async def test_orphan_paste_token_submits_literally(tmp_path, monkeypatch):
     """占位符被手敲出来（store 无对应项）时按原文提交，不炸。"""
     app = _app(tmp_path, monkeypatch)

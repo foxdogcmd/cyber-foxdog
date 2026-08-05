@@ -265,6 +265,10 @@ async def build_run(
         {
             "run_id": ws.run_id,
             "cwd": str(Path.cwd()),
+            "run_dir": str(ws.dir),
+            "work_dir": str(ws.work_dir),
+            "resume_from": str(resume_from) if resume_from is not None else None,
+            "source_run_id": resume_from.name if resume_from is not None else None,
             "objective": objective,
             "target": target,
             "flag_format": flag_format,

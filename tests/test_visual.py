@@ -104,6 +104,13 @@ def test_agent_text_inline_code_and_bold():
     assert span_map.get("重点") == "bold"
 
 
+def test_agent_stream_block_strips_leading_newlines_after_bullet():
+    block = AgentStreamBlock()
+    rendered = block._render_text("\n\n正文从同一行开始").plain
+    assert rendered.startswith("● 正文")
+    assert not rendered.startswith("● \n")
+
+
 def _spans_of(t: Text):
     """从 Text 提取 (文本, style) 对（render 后的 cell 反推太绕，直接读 spans）。"""
     out = []

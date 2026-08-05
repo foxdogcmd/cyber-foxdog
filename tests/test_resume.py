@@ -9,7 +9,7 @@ from pathlib import Path
 from foxdog.interactive import ChatApp, CommandInput
 from foxdog.llm.client import FakeProvider
 from foxdog import runner as runner_mod
-from foxdog.store.rollout import replay_history, read_records
+from foxdog.store.rollout import replay_history, replay_timeline, read_records, valid_run_id
 
 FLAG = "flag{smoke_test_flag_123}"
 READ_CMD = (
@@ -49,12 +49,31 @@ def test_replay_history_skips_worker_and_keeps_adjacency(tmp_path):
     assert all(m.get("type") != "session_meta" for m in h)
 
 
+def test_replay_timeline_materializes_main_agent_tool_rows(tmp_path):
+    p = tmp_path / "rollout.jsonl"
+    _write_rollout(p)
+    items = replay_timeline(p)
+    assert [item.kind for item in items] == ["assistant", "tool_call", "tool_result", "assistant"]
+    assert items[0].content == "先侦察"
+    assert items[1].call_id == "t1" and items[1].name == "shell_exec"
+    assert items[2].content == "80/tcp open"
+    assert all("worker 支线" not in item.content for item in items)
+
+
 def test_read_records_skips_meta(tmp_path):
     p = tmp_path / "rollout.jsonl"
     _write_rollout(p)
     recs = read_records(p)
     assert all(r.get("type") != "session_meta" for r in recs)
     assert any(r.get("type") == "tool_result" for r in recs)
+
+
+def test_run_id_validation_rejects_path_components():
+    assert valid_run_id("20260101-000000-old1")
+    assert valid_run_id("old_1.2")
+    assert not valid_run_id("../old")
+    assert not valid_run_id("..")
+    assert not valid_run_id("old/run")
 
 
 async def test_resume_bare_command_opens_picker_then_selects(tmp_path, monkeypatch):
@@ -96,6 +115,10 @@ async def test_resume_bare_command_opens_picker_then_selects(tmp_path, monkeypat
         assert app.last_run is not None
         assert app.last_run.gate.solved
         assert (app.last_run.ws.work_dir / "resume_marker.txt").read_text(encoding="utf-8") == "kept from old run\n"
+        meta = json.loads((app.last_run.ws.dir / "rollout.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        assert meta["source_run_id"] == "20260101-000000-old1"
+        assert meta["resume_from"].endswith("20260101-000000-old1")
+        assert Path(meta["work_dir"]) == app.last_run.ws.work_dir
         _submit(app, "/quit")
         await pilot.pause(0.3)
 

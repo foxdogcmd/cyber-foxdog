@@ -110,6 +110,11 @@ def test_workspace_seed_from_run_copies_resumable_state(tmp_path):
     restored.close()
 
 
+def test_workspace_rejects_unsafe_run_id(tmp_path):
+    with pytest.raises(ValueError):
+        Workspace(base=tmp_path, run_id="../escape")
+
+
 def test_winner_roundtrip(tmp_path):
     ws = Workspace(base=tmp_path, run_id="cas")
     assert ws.read_winner() is None
