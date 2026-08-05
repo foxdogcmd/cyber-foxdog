@@ -64,7 +64,7 @@ M2 新增：
 M3 新增（多 worker 协作层）：
 
 - **黑板**（`swarm/blackboard.py`）：每 run 一个 SQLite（WAL）`blackboard.db`，事件溯源——append-only `events` 表是唯一事实源，`facts`/`intents`/`deadends` 物化视图可 `rebuild_views()` 重放重建。Intents 带 `route_hash` 去重三件套（route 折叠 / difflib≥0.9 近重复 / barren 二次去重），id 为 `I<n>-<goal sha1前6>` 防撞车；`claim_intent` 原子认领（`UPDATE ... WHERE status='open'` + rowcount 守护，WON/LOST）。M2 的 facts.jsonl 已迁移进黑板（FactsBoard 门面保持每 turn 注入系统提示）。
-- **子 agent 工具**：`spawn_agent(prompt)` 扇出独立 loop（共享黑板/FlagGate/工作区/权限链，registry 剥掉 spawn 系→深度上限 1），`wait_agent(ids, timeout_s)` 收汇报，`list_agents` 看状态。任一 worker 过闸全员自然停。
+- **子 agent 工具**：`spawn_agent(prompt)` 扇出独立 loop（共享黑板/FlagGate/run 工作区/权限链，默认 cwd 隔离到 `work/.workers/<id>`，registry 剥掉 spawn 系→深度上限 1），`wait_agent(ids, timeout_s)` 收汇报，`list_agents` 看状态。任一 worker 过闸全员自然停。
 - **ReasonPlanner**（`swarm/planner.py`）：读黑板摘要出严格 JSON（verdict + ≤4 intents + audit），围栏容忍/解析失败重试一次/非法 verdict fallback explore。
 - **协调主循环**（`swarm/coordinator.py`）：`--workers N` 开启。race 快路径（主 worker 最多冲刺 3 分钟，出 flag 直接结束；provider error 或连续无工具进展则提前切入 swarm，用户中断仍立即终止）→ 2s 一拍 OODA：黑板有变化且过 10s 冷却 → planner 派 intent；空槽有货按批次补 worker。预算由 swarm 整体共享。配套工具 `list_board` / `claim_intent` / `complete_intent`。
 - 事件带 `[worker-x]` 前缀（headless 渲染与 JSONL 都有 `worker` 字段）；writeup 纳入 intents 完成情况。
@@ -202,7 +202,7 @@ headless 启动形态是 `claude -p <prompt> --output-format stream-json --verbo
 
 ## Docker 工具环境
 
-Docker 模式容器化命令执行与 Claude Code CLI，不把 FoxDog 主 agent/TUI 塞进容器：模型请求、文件工具、CAS、FlagGate 与协作黑板仍留在宿主；`shell_exec`、后台命令、YAML recipe、`python_eval`、`shell_session` 和 Claude race 在 Linux 容器里执行，所有 worker 共享。run 目录绑定到 `/workspace`，默认命令目录是 `/workspace/work`；Claude 的 CC Switch 白名单环境只注入 Claude 进程。
+Docker 模式容器化命令执行与 Claude Code CLI，不把 FoxDog 主 agent/TUI 塞进容器：模型请求、文件工具、CAS、FlagGate 与协作黑板仍留在宿主；`shell_exec`、后台命令、YAML recipe、`python_eval`、`shell_session` 和 Claude race 在 Linux 容器里执行。run 目录绑定到 `/workspace`，主 solver 默认命令目录是 `/workspace/work`，swarm/子 agent worker 默认命令目录是 `work/.workers/<id>` 对应的容器路径；Claude 的 CC Switch 白名单环境只注入 Claude 进程。
 
 容器内的 agent 使用说明见 `/opt/foxdog/AGENTS.md`，仓库对应文件是 [`runtime_image/AGENTS.md`](foxdog/runtime_image/AGENTS.md)。
 
@@ -224,7 +224,7 @@ foxdog kali reset    # rm 后重建（清空容器内状态）
 
 `docker-persistent`：常驻容器 `foxdog-kali`（label `foxdog.kali=true`，不加 --rm），绑定 `.foxdog-runs/` 根目录到 `/workspace`，每个 run 用独立 `/workspace/<run-id>/work`；run 结束只 pkill 收尾本 run 的 exec，不停容器。
 
-**两端路径约定**（docker 模式系统提示会自动注入）：run 目录 ↔ 容器 `/workspace`（同一批文件，bind mount）；文件工具（`read_file`/`write_file`/`edit_file`）只能读写这个工作区——与 shell 所见完全同一视图，宿主工作区外的文件读写都拒绝（唯一入口 `import_file`）；`shell_exec`/`python_eval`/`shell_session`/配方工具都在容器内执行，路径用 `/workspace/...`。Windows 上的题目附件（桌面/下载）先用 `import_file` 复制进 `inputs/`——它返回 workspace 相对路径和容器内绝对路径，别猜两端路径。
+**两端路径约定**（docker 模式系统提示会自动注入）：run 目录 ↔ 容器 `/workspace`（同一批文件，bind mount）；文件工具（`read_file`/`write_file`/`edit_file`）只能读写这个工作区——与 shell 所见完全同一视图，宿主工作区外的文件读写都拒绝（唯一入口 `import_file`）；`shell_exec`/`python_eval`/`shell_session`/配方工具都在容器内执行，路径用 `/workspace/...`。swarm worker 的相对路径默认在自己的 `work/.workers/<id>`，Docker 下 `TMPDIR/TMP/TEMP` 也指向私有 `.tmp`；要共享文件就显式写到公共 `work/`、`inputs/` 或绝对 `/workspace/...`。Windows 上的题目附件（桌面/下载）先用 `import_file` 复制进 `inputs/`——它返回 workspace 相对路径和容器内绝对路径，别猜两端路径。
 
 容器取消时 FoxDog 会终止本次命令的容器内进程组（procps pkill -g），run 结束再统一清理（临时模式删容器，常驻模式只收尾 exec）。
 

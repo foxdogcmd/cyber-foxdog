@@ -9,8 +9,10 @@ from foxdog.executor.runtime import DockerRuntime, LocalRuntime
 from foxdog.store.workspace import Workspace
 from foxdog.tools import ToolContext
 from foxdog.executor.background import BackgroundRegistry
+from foxdog.tools.builtin.files import ReadFileTool, WriteFileTool
 from foxdog.tools.builtin.import_file import ImportFileTool
 from foxdog.tools.builtin.python_repl import PythonEvalTool, _SpawnRepl
+from foxdog.tools.builtin.shell import ShellExecTool
 
 
 def _ctx(ws: Workspace, runtime=None) -> ToolContext:
@@ -191,3 +193,88 @@ async def test_python_eval_local_unchanged(tmp_path):
     assert res1.ok
     res2 = await tool.run({"code": "print(x + 1)"}, ctx)
     assert res2.ok and "42" in res2.output
+
+
+async def test_worker_context_scopes_shell_files_and_python(tmp_path):
+    ws = Workspace(base=tmp_path, run_id="worker-scope")
+    worker_dir = ws.work_dir / ".workers" / "worker-1"
+
+    class RecordingRuntime(LocalRuntime):
+        def __init__(self, workspace):
+            super().__init__(workspace)
+            self.shell_cwds: list[Path] = []
+
+        async def run_shell(self, command: str, **kwargs) -> ExecResult:
+            self.shell_cwds.append(Path(kwargs["cwd"]).resolve())
+            return ExecResult(exit_code=0, output="ok")
+
+    runtime = RecordingRuntime(ws.dir)
+    ctx = ToolContext(
+        workspace=ws,
+        background=BackgroundRegistry(),
+        emit=lambda e: None,
+        fetch_output=lambda h, o, l: "",
+        runtime=runtime,
+        work_dir=worker_dir,
+        worker_id="worker-1",
+    )
+
+    res = await ShellExecTool(promote_after=1).run({"command": "pwd"}, ctx)
+    assert res.ok, res.error
+    assert runtime.shell_cwds == [worker_dir.resolve()]
+
+    res = await WriteFileTool().run({"path": "note.txt", "content": "private"}, ctx)
+    assert res.ok, res.error
+    assert (worker_dir / "note.txt").read_text(encoding="utf-8") == "private"
+    res = await ReadFileTool().run({"path": "note.txt"}, ctx)
+    assert res.ok and "private" in res.output
+
+    res = await WriteFileTool().run({"path": "../../shared.txt", "content": "shared"}, ctx)
+    assert res.ok, res.error
+    assert (ws.work_dir / "shared.txt").read_text(encoding="utf-8") == "shared"
+
+    tool = PythonEvalTool()
+    res = await tool.run({"code": "x = 41"}, ctx)
+    assert res.ok, res.error
+    other = ToolContext(
+        workspace=ws,
+        background=BackgroundRegistry(),
+        emit=lambda e: None,
+        fetch_output=lambda h, o, l: "",
+        runtime=runtime,
+        facts=ctx.facts,
+        work_dir=ws.work_dir / ".workers" / "worker-2",
+        worker_id="worker-2",
+    )
+    res = await tool.run({"code": "print('x' in globals())"}, other)
+    assert res.ok and "False" in res.output
+    res = await tool.run({"code": "print(x + 1)"}, ctx)
+    assert res.ok and "42" in res.output
+    ctx.facts.close()
+
+
+def test_worker_context_docker_env_uses_private_tmp(tmp_path):
+    ws = Workspace(base=tmp_path, run_id="worker-docker-env")
+
+    async def runner(argv, **_kw):
+        return ExecResult(exit_code=0, output="ok")
+
+    runtime = DockerRuntime(ws.dir, container_name="foxdog-env", command_runner=runner)
+    ctx = ToolContext(
+        workspace=ws,
+        background=BackgroundRegistry(),
+        emit=lambda e: None,
+        fetch_output=lambda h, o, l: "",
+        runtime=runtime,
+        work_dir=ws.work_dir / ".workers" / "worker-1",
+        worker_id="worker-1",
+    )
+
+    env = ctx.execution_env()
+    assert env is not None
+    assert env["FOXDOG_WORKER_ID"] == "worker-1"
+    assert env["FOXDOG_CWD"] == "/workspace/work/.workers/worker-1"
+    assert env["FOXDOG_SHARED_WORK"] == "/workspace/work"
+    assert env["TMPDIR"] == "/workspace/work/.workers/worker-1/.tmp"
+    assert env["TMP"] == env["TMPDIR"]
+    ctx.facts.close()

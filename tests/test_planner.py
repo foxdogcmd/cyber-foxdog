@@ -166,6 +166,136 @@ async def test_spectator_correct_is_directive_not_fact(tmp_path):
     board.close()
 
 
+async def test_spectator_correct_can_close_claimed_intent_and_cancel_worker(tmp_path):
+    """旁观者不仅写纠偏，还能把重复 intent 收尾并取消正在跑的 worker。"""
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.spectator import SpectatorReview
+
+    board = Blackboard(tmp_path / "spectator-close.db")
+    ok, iid = board.create_intent("重复分析栈槽", "rev", "local", "rbp-slot")
+    assert ok
+    assert board.claim_intent("worker-3")["id"] == iid
+
+    class CloseSpectator:
+        async def review(self, *_args, **_kwargs):
+            return SpectatorReview(
+                verdict="correct",
+                instruction="关闭 I1：结论已被黑板事实覆盖",
+                close_intents=["I1"],
+                close_reason="结论已被黑板事实覆盖",
+            )
+
+    events = []
+    coord = Coordinator(
+        board=board,
+        planner=SimpleNamespace(),
+        factory=SimpleNamespace(budget_state=None),
+        emit=events.append,
+        rollout=None,
+        gate=SimpleNamespace(solved=False),
+        objective="审计目标",
+        budget=Budget(),
+        spectator=CloseSpectator(),
+    )
+    task = asyncio.create_task(asyncio.sleep(3600))
+    coord._worker_tasks["worker-3"] = task
+    coord._worker_intents["worker-3"] = iid
+
+    assert await coord._spectator_once() is None
+    await asyncio.sleep(0)
+    assert task.cancelled()
+    await asyncio.gather(task, return_exceptions=True)
+    intent = board.get_intent(iid)
+    assert intent["status"] == "barren"
+    assert "spectator action" in intent["result"]
+    notes = [getattr(event, "message", "") for event in events]
+    assert any("spectator 已关闭" in note and iid in note for note in notes)
+    board.close()
+
+
+async def test_spectator_natural_language_merge_closes_duplicates(tmp_path):
+    """旧模型只写自然语言“把 I1/I2 合并”时也做保守执行：保留第一个，关闭其余。"""
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.spectator import SpectatorReview
+
+    board = Blackboard(tmp_path / "spectator-merge.db")
+    ok, i1 = board.create_intent("本地 exploit 甲", "pwn", "local", "exploit-a")
+    assert ok
+    ok, i2 = board.create_intent("远程 exploit 乙", "pwn", "remote", "exploit-b")
+    assert ok
+    ok, i3 = board.create_intent("符号执行 exploit 丙", "rev", "local", "symbolic-c")
+    assert ok
+
+    class MergeSpectator:
+        async def review(self, *_args, **_kwargs):
+            return SpectatorReview(
+                verdict="correct",
+                instruction="把 I1/I2/I3 合并为唯一本地 exploit 任务，保留 I1",
+            )
+
+    coord = Coordinator(
+        board=board,
+        planner=SimpleNamespace(),
+        factory=SimpleNamespace(budget_state=None),
+        emit=lambda _event: None,
+        rollout=None,
+        gate=SimpleNamespace(solved=False),
+        objective="审计目标",
+        budget=Budget(),
+        spectator=MergeSpectator(),
+    )
+
+    assert await coord._spectator_once() is None
+    assert board.get_intent(i1)["status"] == "open"
+    assert board.get_intent(i2)["status"] == "barren"
+    assert board.get_intent(i3)["status"] == "barren"
+    board.close()
+
+
+async def test_spectator_summary_close_clause_has_teeth(tmp_path):
+    """旧模型把关闭建议写在 summary 里时，也应真正关闭对应 intent。"""
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.spectator import SpectatorReview
+
+    board = Blackboard(tmp_path / "spectator-summary-close.db")
+    ids = []
+    for goal in ("rbp 栈槽", "Exchange UAF", "本地 exploit"):
+        ok, iid = board.create_intent(goal, "rev", "local", goal)
+        assert ok
+        ids.append(iid)
+
+    class SummaryOnlySpectator:
+        async def review(self, *_args, **_kwargs):
+            return SpectatorReview(
+                verdict="correct",
+                summary="立即关闭/合并 I1、I2：这些意图的结论已在黑板覆盖。",
+            )
+
+    coord = Coordinator(
+        board=board,
+        planner=SimpleNamespace(),
+        factory=SimpleNamespace(budget_state=None),
+        emit=lambda _event: None,
+        rollout=None,
+        gate=SimpleNamespace(solved=False),
+        objective="审计目标",
+        budget=Budget(),
+        spectator=SummaryOnlySpectator(),
+    )
+
+    assert await coord._spectator_once() is None
+    assert board.get_intent(ids[0])["status"] == "barren"
+    assert board.get_intent(ids[1])["status"] == "barren"
+    assert board.get_intent(ids[2])["status"] == "open"
+    board.close()
+
+
 async def test_cancelled_worker_not_reported_as_completed(tmp_path):
     """被抢占（cancel）的 worker 不再误报"完成（无汇报）"；未 solved 时记 barren+被抢占中断。"""
     from foxdog.core.budget import Budget
@@ -203,6 +333,45 @@ async def test_cancelled_worker_not_reported_as_completed(tmp_path):
     assert any("被抢占中断" in n for n in notes), notes
     intents = {i["id"]: i for i in board.intents()}
     assert all(i["status"] == "barren" for i in intents.values()), intents
+    board.close()
+
+
+async def test_worker_auto_finish_keeps_long_report_on_board(tmp_path):
+    """自动收尾保留较完整报告，事件只显示紧凑摘要，避免 UI 半截 markdown。"""
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+
+    board = Blackboard(tmp_path / "long-report.db")
+    ok, iid = board.create_intent("总结一个复杂方向", "rev", "local", "summary")
+    assert ok
+    long_report = "I11 已完成并收尾。\n\n## I11 结论\n" + ("细节 " * 500)
+
+    class ReportLoop:
+        async def run_turn(self, history, turn_no=1):
+            history.append({"role": "assistant", "content": long_report})
+
+    events = []
+    coord = Coordinator(
+        board=board,
+        planner=SimpleNamespace(),
+        factory=SimpleNamespace(budget_state=None, extra_providers=[], make_loop=lambda wid, provider=None: ReportLoop()),
+        emit=events.append,
+        rollout=None,
+        gate=SimpleNamespace(solved=False, expected_flags=1, flags=[]),
+        objective="审计",
+        budget=Budget(),
+    )
+    await coord._run_worker("worker-11")
+
+    result = board.get_intent(iid)["result"]
+    assert "I11 结论" in result
+    assert len(result) > 1000
+    notes = [getattr(event, "message", "") for event in events]
+    done_note = next(note for note in notes if "完成" in note and iid in note)
+    assert "\n" not in done_note
+    assert "报告已写入黑板" in done_note
+    assert len(done_note) < 260
     board.close()
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -65,6 +66,8 @@ class ToolContext:
         sessions: SessionRegistry | None = None,
         facts: FactsBoard | None = None,
         runtime: ExecutionRuntime | None = None,
+        work_dir: str | Path | None = None,
+        worker_id: str | None = None,
     ) -> None:
         self.workspace = workspace
         self.background = background
@@ -72,6 +75,21 @@ class ToolContext:
         self.fetch_output = fetch_output
         self.flag_gate = flag_gate
         self.runtime = runtime or LocalRuntime(workspace.dir if workspace is not None else None)
+        self.worker_id = worker_id
+        if workspace is not None:
+            resolved_work_dir = Path(work_dir).resolve() if work_dir is not None else workspace.work_dir.resolve()
+            work_root = workspace.work_dir.resolve()
+            if resolved_work_dir != work_root and work_root not in resolved_work_dir.parents:
+                raise ValueError(f"tool work_dir is outside workspace work root: {resolved_work_dir}")
+            resolved_work_dir.mkdir(parents=True, exist_ok=True)
+            self.work_dir = resolved_work_dir
+            self.tmp_dir = self.work_dir / ".tmp"
+            self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.work_dir = Path(work_dir).resolve() if work_dir is not None else None
+            self.tmp_dir = self.work_dir / ".tmp" if self.work_dir is not None else None
+            if self.tmp_dir is not None:
+                self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.sessions = sessions or SessionRegistry()
         if facts is not None:
             self.facts = facts
@@ -79,6 +97,45 @@ class ToolContext:
             self.facts = FactsBoard(workspace.dir / "blackboard.db")
         else:
             self.facts = None  # /setting 配置 agent：无工作区无黑板（工具集不含事实板）
+
+    def resolve_work_path(self, path: str) -> Path:
+        """Resolve a tool path relative to this context's cwd, capped at run work/."""
+        if self.workspace is None or self.work_dir is None:
+            raise PermissionError("当前工具没有可用工作区")
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            p = self.work_dir / p
+        p = p.resolve()
+        root = self.workspace.work_dir.resolve()
+        if p != root and root not in p.parents:
+            raise PermissionError(f"路径越出工作区: {path}")
+        return p
+
+    def _display_execution_path(self, path: Path) -> str:
+        display = getattr(self.runtime, "display_path", None)
+        if callable(display):
+            try:
+                return str(display(path))
+            except Exception:
+                pass
+        return str(path)
+
+    def execution_env(self) -> dict[str, str] | None:
+        """Environment additions for commands in this context."""
+        if self.workspace is None or self.work_dir is None:
+            return None
+        if getattr(self.runtime, "kind", "local") == "local":
+            return None
+        env = {
+            "FOXDOG_CWD": self._display_execution_path(self.work_dir),
+            "FOXDOG_SHARED_WORK": self._display_execution_path(self.workspace.work_dir),
+        }
+        if self.worker_id:
+            env["FOXDOG_WORKER_ID"] = self.worker_id
+        if self.tmp_dir is not None:
+            tmp = self._display_execution_path(self.tmp_dir)
+            env.update({"TMPDIR": tmp, "TMP": tmp, "TEMP": tmp, "FOXDOG_TMP": tmp})
+        return env
 
 
 class Tool(ABC):

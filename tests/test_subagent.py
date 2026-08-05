@@ -19,7 +19,7 @@ from foxdog.swarm.worker import WorkerFactory
 from foxdog.tools import ToolContext, ToolRegistry, register_builtin_tools
 from foxdog.tools.builtin.subagent import ListAgentsTool, SpawnAgentTool, SubAgentManager, WaitAgentTool
 
-READ_CMD = "type flag.txt" if sys.platform == "win32" else "cat flag.txt"
+READ_CMD = "Get-Content -Raw -LiteralPath '..\\..\\flag.txt'" if sys.platform == "win32" else "cat ../../flag.txt"
 
 
 def _make_stack(tmp_path, provider, run_id="subagent-test"):
@@ -79,6 +79,22 @@ async def test_spawn_two_and_wait(tmp_path):
     child_loop = factory.make_loop("x")
     assert child_loop.registry.get("spawn_agent") is None
     assert child_loop.registry.get("shell_exec") is not None
+    child_loop.orchestrator.ctx.facts.close()
+
+
+def test_worker_factory_assigns_private_workdirs(tmp_path):
+    provider = FakeProvider(script=[("text", "x")])
+    ws, _events, _rollout, _gate, _background, factory, _manager, _loop = _make_stack(tmp_path, provider)
+
+    one = factory.make_loop("worker-1")
+    two = factory.make_loop("worker/2")
+
+    assert one.orchestrator.ctx.work_dir == (ws.work_dir / ".workers" / "worker-1").resolve()
+    assert two.orchestrator.ctx.work_dir == (ws.work_dir / ".workers" / "worker_2").resolve()
+    assert one.orchestrator.ctx.work_dir != two.orchestrator.ctx.work_dir
+    assert one.orchestrator.ctx.work_dir.is_dir()
+    assert two.orchestrator.ctx.work_dir.is_dir()
+    one.orchestrator.ctx.facts.close()
 
 
 async def test_child_solved_stops_parent(tmp_path):

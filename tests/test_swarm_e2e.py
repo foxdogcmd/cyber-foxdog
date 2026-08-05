@@ -19,7 +19,7 @@ from foxdog.swarm.worker import WorkerFactory
 from foxdog.tools import ToolContext, ToolRegistry, register_builtin_tools
 
 FLAG = "flag{swarm_e2e_ok}"
-READ_CMD = "type flag.txt" if sys.platform == "win32" else "cat flag.txt"
+READ_CMD = "Get-Content -Raw -LiteralPath '..\\..\\flag.txt'" if sys.platform == "win32" else "cat ../../flag.txt"
 PLAN_JSON = json.dumps(
     {
         "verdict": "explore",

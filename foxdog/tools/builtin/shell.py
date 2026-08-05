@@ -44,7 +44,8 @@ class ShellExecTool(Tool):
         async def runner(on_output):
             return await ctx.runtime.run_shell(
                 a.command,
-                cwd=ctx.workspace.work_dir,
+                cwd=ctx.work_dir,
+                env=ctx.execution_env(),
                 total_timeout=total,
                 cas_store=ctx.workspace.cas_store,
                 on_output=on_output,

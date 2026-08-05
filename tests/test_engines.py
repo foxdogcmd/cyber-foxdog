@@ -160,7 +160,7 @@ def _stack(tmp_path, run_id):
 async def test_race_engines_first_valid_wins(tmp_path):
     """引擎 A 闲逛（sleep），引擎 B 第二轮 submit flag → race 结束、A 被取消、exit 0。"""
     ws, events, registry, gate, background, ctx = _stack(tmp_path, "race-engines")
-    read_cmd = "type flag.txt" if sys.platform == "win32" else "cat flag.txt"
+    read_cmd = "Get-Content -Raw -LiteralPath '..\\..\\flag.txt'" if sys.platform == "win32" else "cat ../../flag.txt"
 
     # 主 solver（闲逛）
     main_provider = FakeProvider(script=[("tool", "shell_exec", {"command": "echo 侦察中"})], repeat=True)

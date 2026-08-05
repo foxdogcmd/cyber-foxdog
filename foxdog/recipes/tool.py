@@ -82,7 +82,8 @@ class RecipeTool(Tool):
         argv_runner = runtime.run_argv if runtime is not None else run_argv
         res = await argv_runner(
             argv,
-            cwd=ctx.workspace.work_dir,
+            cwd=ctx.work_dir,
+            env=ctx.execution_env(),
             idle_timeout=min(300.0, self.recipe.spec.timeout),
             total_timeout=self.recipe.spec.timeout,
             cas_store=ctx.workspace.cas_store,

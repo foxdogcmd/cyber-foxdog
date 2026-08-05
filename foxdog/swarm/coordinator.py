@@ -26,10 +26,10 @@ from ..tools.builtin.subagent import last_assistant_text
 from .blackboard import Blackboard
 from .planner import ReasonPlanner
 from .worker import WorkerFactory
-from .spectator import Spectator
+from .spectator import Spectator, SpectatorReview
 
 WORKER_SYSTEM = """\
-你是 CTF 解题 swarm 的 worker，与其他 worker 共享工作区、黑板和 FlagGate。
+你是 CTF 解题 swarm 的 worker，与其他 worker 共享黑板和 FlagGate。
 纪律：
 1. 开工先读板：下方黑板摘要里有控制指令、已知事实、已排除方向和其他 intent 状态；死路别再试。
 2. 每确认一个事实就 post_fact 上板，每排除一个方向就 post_deadend 上板。
@@ -44,9 +44,40 @@ WORKER_SYSTEM = """\
 8. **收尾必须记录发现**：完成 intent 前，先把本轮所有重要发现（端口/服务/漏洞/凭证/路径）
    用 post_fact 上板——没上板的发现等于没发现，后续 worker 和 planner 看不到。
    即使是 barren（方向走不通），也要 post_deadend 记录排除原因。
-9. read_file/write_file/edit_file 与 shell 同一个文件系统：相对路径与 /workspace 路径两端可见；
-   宿主上的资料先 import_file 复制进工作区，别猜两端路径。
+9. 你有 worker 私有 cwd：shell_exec、python_eval、shell_session、read_file/write_file/edit_file
+   的相对路径默认落在你的 scratch 目录，避免和其他 worker 抢同名临时文件。
+   Docker runtime 下 TMPDIR/TMP/TEMP 也指向私有 scratch 的 .tmp；临时文件用 $TMPDIR，
+   不要硬编码 /tmp/foo 这种全队共享路径。需要共享文件时显式写入 run 公共 work 区或 inputs 区；
+   宿主上的资料先 import_file 复制进工作区。
 """
+
+_INTENT_REF_RE = re.compile(r"\bI\d+(?:-[0-9a-f]{6})?\b", re.IGNORECASE)
+_SPECTATOR_CLOSE_CLAUSE_RE = re.compile(
+    r"(?:关闭|终止|取消|停止|close|cancel|kill)[^。；;\n]*",
+    re.IGNORECASE,
+)
+_SPECTATOR_MERGE_RE = re.compile(
+    r"(?:把|将)\s*((?:I\d+(?:-[0-9a-f]{6})?[\s、,，/和]*){2,})\s*(?:合并|归并|并入|merge)",
+    re.IGNORECASE,
+)
+_WORKER_RESULT_LIMIT = 8000
+_WORKER_NOTE_LIMIT = 140
+
+
+def _compact_worker_note(text: str, limit: int = _WORKER_NOTE_LIMIT) -> str:
+    clean = " ".join(str(text).split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 12)].rstrip() + f" ...[+{len(clean) - limit} chars]"
+
+
+def _worker_result(text: str) -> str:
+    clean = str(text).strip()
+    if not clean:
+        return ""
+    if len(clean) <= _WORKER_RESULT_LIMIT:
+        return clean
+    return clean[:_WORKER_RESULT_LIMIT].rstrip() + f"\n[worker report truncated: +{len(clean) - _WORKER_RESULT_LIMIT} chars]"
 
 
 class Coordinator:
@@ -156,6 +187,9 @@ class Coordinator:
         )
         if review.summary:
             self.emit(SwarmNote(message=f"spectator：{review.summary}"))
+        action_count = self._apply_spectator_actions(review)
+        if action_count:
+            self._last_plan_created = 0
         if review.verdict == "correct" and review.instruction:
             # 非破坏性纠偏：写独立 directive，避免污染事实表。worker 下一 turn
             # 和 planner 的 board.summary 都会看到；无在跑 worker 时触发重规划落地。
@@ -169,6 +203,97 @@ class Coordinator:
         elif review.verdict == "complete":
             return review.summary or "旁观者确认任务完成"
         return None
+
+    def _refs_from_text_close_clauses(self, text: str) -> list[str]:
+        refs: list[str] = []
+        for match in _SPECTATOR_CLOSE_CLAUSE_RE.finditer(text or ""):
+            refs.extend(_INTENT_REF_RE.findall(match.group(0)))
+        return refs
+
+    def _merge_groups_from_text(self, text: str) -> list[list[str]]:
+        groups: list[list[str]] = []
+        for match in _SPECTATOR_MERGE_RE.finditer(text or ""):
+            refs = _INTENT_REF_RE.findall(match.group(1))
+            if len(refs) >= 2:
+                groups.append(refs)
+        return groups
+
+    def _resolve_intent_ref(self, ref: str) -> str | None:
+        resolver = getattr(self.board, "resolve_intent_ref", None)
+        if resolver is not None:
+            return resolver(ref)
+        return ref
+
+    def _apply_spectator_actions(self, review: SpectatorReview) -> int:
+        """Execute spectator scheduling actions; returns number of state changes."""
+        if self.board is None:
+            return 0
+        reason = review.close_reason.strip() or review.instruction.strip() or review.summary.strip()
+        if not reason:
+            reason = "旁观者判定该 intent 已被覆盖或应合并"
+        status = review.close_status if review.close_status in ("done", "barren") else "barren"
+
+        action_text = "\n".join(
+            part for part in (review.instruction, review.summary, review.close_reason) if part
+        )
+
+        close_refs: list[str] = list(review.close_intents)
+        close_refs.extend(self._refs_from_text_close_clauses(action_text))
+
+        merge_groups = [list(group) for group in review.merge_groups]
+        merge_groups.extend(self._merge_groups_from_text(action_text))
+        for group in merge_groups:
+            resolved = [self._resolve_intent_ref(ref) for ref in group]
+            resolved = [ref for ref in resolved if ref]
+            if len(resolved) < 2:
+                continue
+            keep = resolved[0]
+            for ref in resolved[1:]:
+                close_refs.append(ref)
+            reason += f"\n合并组保留 {keep}，关闭其余重复 intent。"
+
+        changed = 0
+        seen: set[str] = set()
+        for ref in close_refs:
+            intent_id = self._resolve_intent_ref(ref)
+            if not intent_id or intent_id in seen:
+                continue
+            seen.add(intent_id)
+            intent = self.board.get_intent(intent_id)
+            if not intent or intent.get("status") not in ("open", "claimed"):
+                continue
+            ok = self.board.complete_intent(
+                intent_id,
+                status,
+                f"[spectator action] {reason}",
+                actor="spectator",
+            )
+            if not ok:
+                continue
+            changed += 1
+            worker_id = intent.get("claimed_by")
+            task = self._worker_tasks.get(str(worker_id)) if worker_id else None
+            if task is not None and not task.done():
+                task.cancel()
+            worker_note = f"，已取消 {worker_id}" if worker_id and task is not None and not task.done() else ""
+            self.emit(
+                SwarmNote(
+                    message=f"spectator 已关闭 {intent_id}（{status}）{worker_note}：{_compact_worker_note(reason)}",
+                    worker=str(worker_id) if worker_id else None,
+                )
+            )
+
+        for worker_id in review.cancel_workers:
+            task = self._worker_tasks.get(worker_id)
+            if task is None or task.done():
+                continue
+            task.cancel()
+            changed += 1
+            intent_id = self._worker_intents.get(worker_id)
+            if intent_id:
+                self.board.finish_claimed(intent_id, worker_id, "barren", f"[spectator cancel] {reason}")
+            self.emit(SwarmNote(message=f"spectator 已取消 {worker_id}：{_compact_worker_note(reason)}", worker=worker_id))
+        return changed
 
     @property
     def active_race_engines(self) -> tuple[str, ...]:
@@ -552,13 +677,21 @@ class Coordinator:
                 provider = ep_provider
                 break
         loop = self.factory.make_loop(worker_id, provider=provider)
+        loop_ctx = getattr(getattr(loop, "orchestrator", None), "ctx", None)
+        cwd_note = ""
+        if loop_ctx is not None and loop_ctx.workspace is not None:
+            worker_cwd = loop_ctx.runtime.display_path(loop_ctx.work_dir)
+            shared_work = loop_ctx.runtime.display_path(loop_ctx.workspace.work_dir)
+            cwd_note = f"当前 worker 私有 cwd：{worker_cwd}\nrun 公共 work 区：{shared_work}\n\n"
         target_line = (
             f"\n真实靶机地址：{self.target}（intent 描述里的地址若与此不一致，一律以这里为准）"
             if self.target
             else ""
         )
         history = [
-            system_message(f"{WORKER_SYSTEM}\n\n{self.board.summary()}"),
+            system_message(
+                f"{WORKER_SYSTEM}\n\n{cwd_note}{self.board.summary()}"
+            ),
             user_message(
                 f"领取任务 intent {intent['id']}：{intent['goal']}{target_line}\n"
                 + (
@@ -600,13 +733,22 @@ class Coordinator:
                 if claimed:
                     self.emit(SwarmNote(message=f"{intent['id']} 被抢占中断（未完成）", worker=worker_id))
             else:
-                # agent 没自己 complete_intent 的兜底：有汇报记 done，没汇报记 barren
-                status = "done" if report.strip() else "barren"
-                self.board.finish_claimed(
-                    intent["id"], worker_id, status, f"[worker 自动收尾] {report[:200]}"
-                )
+                # agent 没自己 complete_intent 的兜底：有汇报记 done，没汇报记 barren。
+                # 黑板 result 保留较完整报告；事件时间线只放单行摘要，避免 markdown 半截污染 UI。
+                report_body = _worker_result(report)
+                status = "done" if report_body else "barren"
+                auto_result = f"[worker 自动收尾]\n{report_body}" if report_body else "[worker 自动收尾] 无文本汇报"
+                claimed = self.board.finish_claimed(intent["id"], worker_id, status, auto_result)
                 self._record({"type": "event", "kind": "worker_done", "worker": worker_id, "intent": intent["id"]})
-                self.emit(SwarmNote(message=f"完成 {intent['id']}（{report[:60] or '无汇报'}）", worker=worker_id))
+                if claimed:
+                    suffix = (
+                        f"报告已写入黑板：{_compact_worker_note(report_body)}"
+                        if report_body
+                        else "无汇报"
+                    )
+                    self.emit(SwarmNote(message=f"完成 {intent['id']}（{suffix}）", worker=worker_id))
+                else:
+                    self.emit(SwarmNote(message=f"完成 {intent['id']}（agent 已自行收尾）", worker=worker_id))
 
     def _next_worker_id(self) -> str:
         """Generate worker ID with model label if extra providers exist."""

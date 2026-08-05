@@ -20,7 +20,7 @@ from foxdog.tools import Tool, ToolContext, ToolRegistry, ToolResult, register_b
 from foxdog.tools.builtin.subagent import SubAgentManager
 
 FLAG = "flag{cancel_test_ok}"
-READ_CMD = "type flag.txt" if sys.platform == "win32" else "cat flag.txt"
+READ_CMD = "Get-Content -Raw -LiteralPath '..\\..\\flag.txt'" if sys.platform == "win32" else "cat ../../flag.txt"
 
 
 # ------------------------------------------------------------ planner 克制

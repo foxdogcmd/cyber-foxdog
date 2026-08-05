@@ -27,6 +27,7 @@ from typing import Any
 
 NEAR_DUP_RATIO = 0.9  # 近重复 goal 相似度阈值
 SUMMARY_LIMIT = 15  # 摘要默认条数
+RESULT_SUMMARY_CHARS = 300
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -77,6 +78,14 @@ def route_hash_of(category: str, surface: str, technique: str) -> str:
     """route = category:surface:technique 的哈希（同方向折叠用）。"""
     raw = f"{category.strip().lower()}:{surface.strip().lower()}:{technique.strip().lower()}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def compact_line(text: str, limit: int = RESULT_SUMMARY_CHARS) -> str:
+    """Collapse multiline board text for prompt summaries."""
+    clean = " ".join(str(text).split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 12)].rstrip() + f" ...[+{len(clean) - limit} chars]"
 
 
 class Blackboard:
@@ -331,6 +340,25 @@ class Blackboard:
             rows = self._conn.execute("SELECT * FROM intents ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in reversed(rows)]
 
+    def resolve_intent_ref(self, ref: str) -> str | None:
+        """Resolve exact id or short sequence ref like I3 to a full intent id."""
+        raw = ref.strip()
+        if not raw:
+            return None
+        with self._lock:
+            exact = self._conn.execute("SELECT id FROM intents WHERE lower(id)=lower(?)", (raw,)).fetchone()
+            if exact:
+                return str(exact["id"])
+            if "-" in raw:
+                return None
+            rows = self._conn.execute(
+                "SELECT id FROM intents WHERE lower(id) LIKE lower(?) ORDER BY ts, id LIMIT 2",
+                (raw + "-%",),
+            ).fetchall()
+            if len(rows) == 1:
+                return str(rows[0]["id"])
+            return None
+
     def open_intents(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
@@ -367,7 +395,7 @@ class Blackboard:
         lines += [
             f"- {i['id']} [{i['status']}] {i['goal']}"
             + (f"（{i['claimed_by']}）" if i.get("claimed_by") else "")
-            + (f" ⇒ {i['result'][:80]}" if i.get("result") else "")
+            + (f" ⇒ {compact_line(i['result'])}" if i.get("result") else "")
             for i in ints
         ] or ["（无）"]
         return "\n".join(lines)

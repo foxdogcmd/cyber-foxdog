@@ -143,6 +143,22 @@ async def test_docker_runtime_uses_one_container_and_exec_argv(tmp_path):
     assert removals[0] == ["podman", "rm", "--force", "foxdog-test"]
 
 
+async def test_docker_runtime_exec_pidfile_lives_in_workspace(tmp_path):
+    runner = RecordingRunner()
+    workspace = tmp_path / "run"
+    runtime = DockerRuntime(workspace, container_name="foxdog-pid", command_runner=runner)
+
+    await runtime.run_shell("echo ok")
+    await runtime.close()
+
+    execs = [command for command, _kwargs in runner.calls if command[1] == "exec"]
+    shell = execs[0]
+    pidfile = shell[shell.index("foxdog-exec") + 1]
+    assert pidfile.startswith("/workspace/.foxdog-exec/foxdog-exec-")
+    assert not pidfile.startswith("/tmp/")
+    assert (workspace / ".foxdog-exec").is_dir()
+
+
 async def test_docker_runtime_maps_host_and_relative_workdirs(tmp_path):
     runner = RecordingRunner()
     workspace = (tmp_path / "run").resolve()

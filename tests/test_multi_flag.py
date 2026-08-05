@@ -22,8 +22,8 @@ from foxdog.tools import Tool, ToolContext, ToolRegistry, ToolResult, register_b
 
 FLAG1 = "flag{multi_first_ok}"
 FLAG2 = "flag{multi_second_ok}"
-READ1 = "type flag1.txt" if sys.platform == "win32" else "cat flag1.txt"
-READ2 = "type flag2.txt" if sys.platform == "win32" else "cat flag2.txt"
+READ1 = "Get-Content -Raw -LiteralPath '..\\..\\flag1.txt'" if sys.platform == "win32" else "cat ../../flag1.txt"
+READ2 = "Get-Content -Raw -LiteralPath '..\\..\\flag2.txt'" if sys.platform == "win32" else "cat ../../flag2.txt"
 
 
 # ------------------------------------------------------------ FlagGate 多 flag

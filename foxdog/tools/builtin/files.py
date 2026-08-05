@@ -20,7 +20,19 @@ READ_LIMIT = 32 * 1024  # 读文件进上下文的阈值
 
 def _resolve(ctx: ToolContext, path: str, *, write: bool):
     """模型路径 → 宿主可读写 Path（随 runtime 语义）；越权抛 PermissionError。"""
-    return ctx.runtime.resolve_fs_path(path, base_dir=ctx.workspace.work_dir, write=write)
+    return ctx.runtime.resolve_fs_path(path, base_dir=ctx.work_dir, write=write)
+
+
+def _display_rel(ctx: ToolContext, path) -> str:
+    p = path.resolve()
+    for root in (ctx.work_dir, ctx.workspace.work_dir):
+        if root is None:
+            continue
+        try:
+            return str(p.relative_to(root.resolve()))
+        except ValueError:
+            pass
+    return str(p)
 
 
 class ReadArgs(BaseModel):
@@ -117,9 +129,14 @@ class GlobTool(Tool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         a = self.parse_args(args)
-        root = ctx.workspace.work_dir
-        matches = sorted(p for p in root.glob(a.pattern) if p.is_file())[:200]
-        rel = [str(p.relative_to(root)) for p in matches]
+        root = ctx.work_dir
+        work_root = ctx.workspace.work_dir.resolve()
+        matches = sorted(
+            p.resolve()
+            for p in root.glob(a.pattern)
+            if p.is_file() and (p.resolve() == work_root or work_root in p.resolve().parents)
+        )[:200]
+        rel = [_display_rel(ctx, p) for p in matches]
         return ToolResult(output="\n".join(rel) or "(无匹配)")
 
 
@@ -137,7 +154,10 @@ class GrepTool(Tool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         a = self.parse_args(args)
-        root = ctx.workspace.resolve(a.path)
+        try:
+            root = ctx.resolve_work_path(a.path)
+        except PermissionError as exc:
+            return ToolResult(ok=False, error=str(exc))
         try:
             rx = re.compile(a.pattern)
         except re.error as exc:
@@ -151,7 +171,7 @@ class GrepTool(Tool):
                 continue
             for i, line in enumerate(lines, 1):
                 if rx.search(line):
-                    rel = f.relative_to(ctx.workspace.work_dir) if f != root else f.name
+                    rel = _display_rel(ctx, f) if f != root else f.name
                     hits.append(f"{rel}:{i}:{line[:300]}")
                     if len(hits) >= a.max_matches:
                         break

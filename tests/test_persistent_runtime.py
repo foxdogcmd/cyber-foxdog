@@ -93,6 +93,21 @@ async def test_per_run_workdir_mapping(tmp_path):
     assert mapped_inputs == f"{CONTAINER_WORKSPACE}/run-42/inputs"
 
 
+async def test_persistent_runtime_exec_pidfile_is_per_run(tmp_path):
+    runner = PersistentRunner(state="running")
+    runtime = DockerPersistentRuntime(tmp_path / "run-42", command_runner=runner)
+
+    await runtime.run_shell("echo ok")
+    await runtime.close()
+
+    execs = [command for command in runner.calls if command[1] == "exec" and "foxdog-exec" in command]
+    shell = execs[0]
+    pidfile = shell[shell.index("foxdog-exec") + 1]
+    assert pidfile.startswith(f"{CONTAINER_WORKSPACE}/run-42/.foxdog-exec/foxdog-exec-")
+    assert not pidfile.startswith("/tmp/")
+    assert (tmp_path / "run-42" / ".foxdog-exec").is_dir()
+
+
 def test_factory_selects_persistent_backend(tmp_path):
     runtime = create_runtime("docker-persistent", workspace=tmp_path / "run")
     assert isinstance(runtime, DockerPersistentRuntime)

@@ -78,14 +78,14 @@ class SessionRegistry:
     def get(self, session_id: str) -> ShellSession | None:
         return self._sessions.get(session_id)
 
-    async def open(self, session_id: str, cwd: str | None = None, runtime=None) -> ShellSession:
+    async def open(self, session_id: str, cwd: str | None = None, runtime=None, env: dict[str, str] | None = None) -> ShellSession:
         if session_id in self._sessions:
             raise ValueError(f"会话已存在: {session_id}")
         via_runtime = runtime is not None and getattr(runtime, "kind", "local") != "local"
         if via_runtime:
             # docker / docker-persistent：容器内交互 bash（镜像 bash，POSIX 语义）
             try:
-                proc = await runtime.spawn(["bash", "-i"], cwd=cwd)
+                proc = await runtime.spawn(["bash", "-i"], cwd=cwd, env=env)
             except FileNotFoundError as exc:
                 raise ValueError(f"无法在容器内启动 bash: {exc}") from exc
         else:
@@ -100,6 +100,7 @@ class SessionRegistry:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=cwd,
+                    env=env,
                     **kwargs,
                 )
             except FileNotFoundError as exc:

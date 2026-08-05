@@ -16,6 +16,10 @@ from .. import Tool, ToolAccess, ToolContext, ToolResult
 READ_SPILL = 32 * 1024  # read 输出进上下文阈值
 
 
+def _session_key(ctx: ToolContext, session_id: str) -> str:
+    return f"{ctx.worker_id}:{session_id}" if ctx.worker_id else session_id
+
+
 class ShellSessionArgs(BaseModel):
     action: Literal["open", "write", "read", "close"] = Field(description="会话操作")
     session_id: str = Field(description="会话标识（自定义，如 nc1 / gdb1）")
@@ -35,24 +39,25 @@ class ShellSessionTool(Tool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         a = self.parse_args(args)
+        key = _session_key(ctx, a.session_id)
         try:
             if a.action == "open":
-                sess = await ctx.sessions.open(a.session_id, cwd=str(ctx.workspace.work_dir), runtime=ctx.runtime)
-                out = await ctx.sessions.read(a.session_id, wait_ms=max(a.wait_ms, 300))
+                sess = await ctx.sessions.open(key, cwd=str(ctx.work_dir), runtime=ctx.runtime, env=ctx.execution_env())
+                out = await ctx.sessions.read(key, wait_ms=max(a.wait_ms, 300))
                 return ToolResult(
                     output=f"会话 {a.session_id} 已建立（pid={sess.proc.pid}）。活跃会话: {ctx.sessions.ids()}\n{out}".rstrip()
                 )
             if a.action == "write":
                 if a.data is None:
                     return ToolResult(ok=False, error="write 需要 data 参数")
-                await ctx.sessions.write(a.session_id, a.data)
-                out = await ctx.sessions.read(a.session_id, wait_ms=a.wait_ms)
+                await ctx.sessions.write(key, a.data)
+                out = await ctx.sessions.read(key, wait_ms=a.wait_ms)
                 return self._render(ctx, out)
             if a.action == "read":
-                out = await ctx.sessions.read(a.session_id, wait_ms=a.wait_ms)
+                out = await ctx.sessions.read(key, wait_ms=a.wait_ms)
                 return self._render(ctx, out)
             # close
-            tail = await ctx.sessions.close(a.session_id)
+            tail = await ctx.sessions.close(key)
             return ToolResult(output=f"会话 {a.session_id} 已关闭。\n{tail}".rstrip())
         except ValueError as exc:
             return ToolResult(ok=False, error=str(exc))

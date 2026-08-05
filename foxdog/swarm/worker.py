@@ -7,7 +7,9 @@ worker 前缀）、history。
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
+from pathlib import Path
 
 from ..core.loop import AgentLoop
 from ..core.orchestrator import ToolOrchestrator
@@ -20,6 +22,13 @@ from ..tools import ToolContext, ToolRegistry
 
 #: 子 agent registry 剥掉的工具（深度上限：子 agent 不能再扇出）
 SPAWN_TOOLS = {"spawn_agent", "wait_agent", "list_agents"}
+_SAFE_WORKER_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def worker_scratch_dir(work_root: Path, worker_id: str) -> Path:
+    """Return the private scratch cwd for one worker under run work/."""
+    safe = _SAFE_WORKER_ID_RE.sub("_", worker_id).strip("._-") or "worker"
+    return work_root / ".workers" / safe
 
 
 def with_worker(event: Event, worker_id: str) -> Event:
@@ -68,6 +77,10 @@ class WorkerFactory:
         def worker_emit(event: Event) -> None:
             emit(with_worker(event, worker_id))
 
+        work_dir = None
+        if self.base_ctx.workspace is not None:
+            work_dir = worker_scratch_dir(self.base_ctx.workspace.work_dir, worker_id)
+            work_dir.mkdir(parents=True, exist_ok=True)
         ctx = ToolContext(
             workspace=self.base_ctx.workspace,
             background=self.base_ctx.background,
@@ -77,6 +90,8 @@ class WorkerFactory:
             sessions=self.base_ctx.sessions,
             facts=self.base_ctx.facts,
             runtime=self.base_ctx.runtime,
+            work_dir=work_dir,
+            worker_id=worker_id,
         )
         registry = self.base_registry.filtered(self.exclude_tools)
         orchestrator = ToolOrchestrator(registry, self.permission, ctx)

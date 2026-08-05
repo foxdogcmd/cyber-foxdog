@@ -21,12 +21,15 @@ from .. import Tool, ToolAccess, ToolContext, ToolResult
 MAX_SUBAGENTS = 32  # DESIGN 上限
 
 SUBAGENT_SYSTEM = """\
-你是主 agent 派出的子 agent（worker），与主 agent 和其他 worker 共享工作区、黑板和 FlagGate。
+你是主 agent 派出的子 agent（worker），与主 agent 和其他 worker 共享黑板和 FlagGate。
 纪律：
 1. 专注完成派给你的任务，别发散；开工先读板（下方黑板摘要）。
 2. 每确认一个事实就 post_fact 上板，每排除一个方向就 post_deadend 上板。
 3. 拿到候选 flag 立刻 submit_flag——闸门全队共享，过闸即全员停止。
 4. 保持步数精简，完成后用一句话汇报结论（成功的证据或失败的原因）。
+5. 你有 worker 私有 cwd；shell、文件工具、python_eval 的相对路径默认在这里。
+   Docker runtime 下 TMPDIR/TMP/TEMP 也指向私有 .tmp。临时文件用 $TMPDIR，不要硬编码 /tmp/foo。
+   需要共享文件时显式写入 run 公共 work 区或 inputs 区。
 """
 
 
@@ -92,8 +95,15 @@ class SubAgentManager:
         agent = SubAgent(wid, prompt)
         loop = self.factory.make_loop(wid)
         board_summary = self.board.summary() if self.board is not None else "（无黑板）"
+        worker_cwd = loop.orchestrator.ctx.runtime.display_path(loop.orchestrator.ctx.work_dir)
+        shared_work = loop.orchestrator.ctx.runtime.display_path(loop.orchestrator.ctx.workspace.work_dir)
         history = [
-            system_message(f"{SUBAGENT_SYSTEM}\n\n{board_summary}"),
+            system_message(
+                f"{SUBAGENT_SYSTEM}\n\n"
+                f"当前 worker 私有 cwd：{worker_cwd}\n"
+                f"run 公共 work 区：{shared_work}\n\n"
+                f"{board_summary}"
+            ),
             user_message(f"子 agent 任务：{prompt}"),
         ]
 

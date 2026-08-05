@@ -37,8 +37,10 @@ DEFAULT_RUNTIME_IMAGE = "foxdog-runtime:full"
 _EXEC_WRAPPER = """\
 pidfile="$1"
 shift
-echo "$$" > "$pidfile"
-cleanup() { rm -f "$pidfile"; }
+if ! (umask 077; printf '%s\\n' "$$" > "$pidfile") 2>/dev/null; then
+    pidfile=""
+fi
+cleanup() { [ -z "$pidfile" ] || rm -f "$pidfile"; }
 trap cleanup EXIT HUP INT TERM
 "$@"
 """
@@ -395,6 +397,16 @@ class DockerRuntime(ExecutionRuntime):
         self._closed = False
         self._lifecycle_lock = asyncio.Lock()
 
+    def _pidfile_host_dir(self) -> Path:
+        return self.workspace / ".foxdog-exec"
+
+    def _pidfile_container_dir(self) -> str:
+        return f"{CONTAINER_WORKSPACE}/.foxdog-exec"
+
+    def _new_pidfile(self) -> str:
+        self._pidfile_host_dir().mkdir(parents=True, exist_ok=True)
+        return f"{self._pidfile_container_dir()}/foxdog-exec-{uuid.uuid4().hex}.pid"
+
     async def _run_cli(self, argv: Sequence[str], **kwargs: Any) -> ExecResult:
         return await _run_docker_cli(self._command_runner, argv, **kwargs)
 
@@ -479,6 +491,7 @@ class DockerRuntime(ExecutionRuntime):
         """完整创建流程（无锁；image 检查/构建/run）。仅供 start 与子类复用。"""
         self.workspace.mkdir(parents=True, exist_ok=True)
         (self.workspace / "work").mkdir(parents=True, exist_ok=True)
+        self._pidfile_host_dir().mkdir(parents=True, exist_ok=True)
         self._start_attempted = True
         try:
             if not await self._image_available():
@@ -595,7 +608,7 @@ class DockerRuntime(ExecutionRuntime):
                 self._run_cli(
                     self._exec_command(
                         ["sh", "-c", _KILL_WRAPPER, "foxdog-kill", pidfile],
-                        cwd="/tmp",
+                        cwd=self.workdir,
                         env=None,
                     ),
                     idle_timeout=10.0,
@@ -623,8 +636,7 @@ class DockerRuntime(ExecutionRuntime):
         if not argv:
             raise ValueError("argv must not be empty")
         await self._prepare()
-        exec_id = uuid.uuid4().hex
-        pidfile = _pidfile or f"/tmp/foxdog-exec-{exec_id}.pid"
+        pidfile = _pidfile or self._new_pidfile()
         wrapped = [
             "setsid", "--wait", "sh", "-c", _EXEC_WRAPPER,
             "foxdog-exec", pidfile, *argv,
@@ -827,6 +839,12 @@ class DockerPersistentRuntime(DockerRuntime):
         #: 本 run 实例启动、尚未自然退出的 exec pidfile（close 时 pkill 收尾）
         self._open_pidfiles: set[str] = set()
 
+    def _pidfile_host_dir(self) -> Path:
+        return self.run_workspace / ".foxdog-exec"
+
+    def _pidfile_container_dir(self) -> str:
+        return f"{CONTAINER_WORKSPACE}/{self.run_workspace.name}/.foxdog-exec"
+
     def _run_command(self) -> list[str]:
         argv = super()._run_command()
         # 常驻容器打专属 label（kali status/exec 定位用），不加 --rm。
@@ -859,6 +877,7 @@ class DockerPersistentRuntime(DockerRuntime):
                 return
             self.run_workspace.mkdir(parents=True, exist_ok=True)
             (self.run_workspace / "work").mkdir(parents=True, exist_ok=True)
+            self._pidfile_host_dir().mkdir(parents=True, exist_ok=True)
             self._start_attempted = True
             state = await self._container_state()
             if state == "running":
@@ -890,7 +909,7 @@ class DockerPersistentRuntime(DockerRuntime):
         on_output: OutputCallback | None,
     ) -> ExecResult:
         """执行并跟踪 pidfile：active 期间入集合，close() 时统一 pkill 收尾。"""
-        pidfile = f"/tmp/foxdog-exec-{uuid.uuid4().hex}.pid"
+        pidfile = self._new_pidfile()
         self._open_pidfiles.add(pidfile)
         try:
             return await super()._exec(
