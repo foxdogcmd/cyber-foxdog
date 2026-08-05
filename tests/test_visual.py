@@ -16,6 +16,7 @@ from foxdog.protocol.types import (
     ModelRequestComplete,
     ModelRequestStarted,
     ToolCallBegin,
+    ToolCallEnd,
 )
 from foxdog.widgets import AgentStreamBlock, ReasoningBlock, ToolCallRow, agent_text, render_todos
 
@@ -465,6 +466,38 @@ async def test_toolcall_row_spinner_and_done(tmp_path, monkeypatch):
         summary_done = row.query_one(".tc-summary").render().plain
         assert "✓" in summary_done and "88ms" in summary_done
         assert row.has_class("succeeded")  # success color is persistent history state
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
+async def test_tool_output_cannot_escape_or_widen_timeline(tmp_path, monkeypatch):
+    """ANSI output and long unbroken lines stay inside the timeline column."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        output = "\x1b[44m\x1b[2J" + "X" * 300 + "\rsecond line\n" + "\x1b]0;changed title\x07visible"
+        app._queue.put(ToolCallBegin(call_id="unsafe-1", name="shell_exec", arguments='{"command":"printf"}'))
+        app._queue.put(
+            ToolCallEnd(
+                call_id="unsafe-1",
+                name="shell_exec",
+                ok=True,
+                output_preview=output,
+                duration_ms=4,
+            )
+        )
+        await pilot.pause(0.5)
+        row = app.query_one(ToolCallRow)
+        await pilot.click("ToolCallRow")
+        await pilot.pause(0.2)
+        detail = row.query_one(".tc-detail", Static)
+        rendered = detail.render().plain
+        timeline = app.query_one("#timeline")
+        assert "\x1b" not in rendered and "\x07" not in rendered
+        assert "second line" in rendered and "visible" in rendered
+        assert timeline.styles.overflow_x == "hidden"
+        assert row.region.right <= timeline.content_region.right
+        assert detail.region.right <= timeline.content_region.right
         _submit(app, "/quit")
         await pilot.pause(0.3)
 

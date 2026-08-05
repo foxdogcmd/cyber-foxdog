@@ -522,7 +522,18 @@ class ChatApp(App):
     CSS = """
     #status { dock: top; height: 1; padding: 0 1; background: $panel; }
     #workspace, #boardfull { height: 1fr; }
-    #timeline { width: 1fr; padding: 1 2 0 2; }
+    #timeline {
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+        overflow-x: hidden;
+        padding: 1 2 0 2;
+    }
+    #timeline > * {
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+    }
     #board {
         display: none;
         width: 52;
@@ -561,6 +572,12 @@ class ChatApp(App):
         padding: 0 0 1 0;
         border-bottom: solid $primary-darken-2;
         margin-bottom: 1;
+    }
+    #setting-log {
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+        overflow-x: hidden;
     }
     #boardfull Static {
         height: auto;
@@ -1002,11 +1019,9 @@ class ChatApp(App):
 
     async def _write(self, text: Text) -> None:
         tl = self.query_one("#timeline", VerticalScroll)
-        # Preserve URLs: if the Text contains URL-like content, set no_wrap
-        # so Rich does not break them mid-way.
-        plain = text.plain if hasattr(text, "plain") else str(text)
-        if "http" in plain or "https" in plain:
-            text.no_wrap = True
+        # A terminal UI must keep every message inside its own column. In
+        # particular, never let URL-like or tool-derived text opt out of wrap.
+        text.no_wrap = False
 
         def rebuild():
             return Static(text, classes="gap-top")
@@ -1037,14 +1052,12 @@ class ChatApp(App):
 
     def _write_line(self, text: str, style: str = "") -> None:
         """同步上下文可用（mount 防火后由 textual 调度挂载）。"""
-        import re as _re
         tl = self.query_one("#timeline", VerticalScroll)
-        # Preserve URLs: Rich word-wrapping can break long URLs at character
-        # boundaries on narrow terminals. Split on newlines and use no_wrap
-        # for segments containing URLs so they stay intact.
+        # Split on newlines so each message remains a bounded, independently
+        # laid-out block. Rich is allowed to wrap long URLs at character
+        # boundaries; keeping them unbroken can widen the whole timeline.
         for line in text.splitlines() or [text]:
-            has_url = bool(_re.search(r'https?://', line))
-            captured = Text(line, style=style, no_wrap=has_url)
+            captured = Text(line, style=style, no_wrap=False)
 
             def rebuild(c=captured):
                 return Static(c, classes="gap-top")
@@ -2350,13 +2363,11 @@ class ChatApp(App):
 
     def _setting_write(self, text: str, classes: str = "") -> None:
         """Write to the setting overlay log instead of the main timeline."""
-        import re as _re
         log = self.query_one("#setting-log", Static)
         current = log.render()
         current_plain = current.plain if hasattr(current, "plain") else str(current)
         new_text = current_plain + "\n" + text if current_plain.strip() else text
-        has_url = bool(_re.search(r"https?://", text))
-        log.update(Text(new_text, no_wrap=has_url))
+        log.update(Text(new_text, no_wrap=False))
         sf = self.query_one("#setting-full", VerticalScroll)
         sf.scroll_end(animate=False)
 

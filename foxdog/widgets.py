@@ -28,6 +28,26 @@ TAIL_LIMIT = 200  # 单条文本尾部折叠长度
 _SPINNER = "⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓"
 FILE_PREVIEW_LINES = 10
 REASONING_BUFFER_CHARS = 6000
+_ANSI_ESCAPE_RE = re.compile(
+    r"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x9d[^\x07]*(?:\x07|\x1b\\)|"
+    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\x9b[0-?]*[ -/]*[@-~])"
+)
+
+
+def clean_terminal_text(value: Any) -> str:
+    """Remove terminal control sequences before untrusted text enters the TUI."""
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    return "".join(
+        char
+        for char in text
+        if char in "\n\t"
+        or (
+            ord(char) >= 0x20
+            and ord(char) != 0x7F
+            and not 0x80 <= ord(char) <= 0x9F
+        )
+    )
 
 
 def tail_fold(text: str, limit: int = TAIL_LIMIT) -> str:
@@ -457,11 +477,31 @@ class ToolCallRow(Vertical):
     can_focus = True
 
     DEFAULT_CSS = """
-    ToolCallRow { height: auto; }
-    ToolCallRow .tc-summary { color: $text-muted; }
+    ToolCallRow {
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+        height: auto;
+        overflow-x: hidden;
+    }
+    ToolCallRow .tc-summary {
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+        overflow-x: hidden;
+        color: $text-muted;
+    }
     ToolCallRow.succeeded .tc-summary { color: $success; }
     ToolCallRow.failed .tc-summary { color: $error; }
-    ToolCallRow .tc-detail { display: none; padding-left: 2; color: $text-muted; }
+    ToolCallRow .tc-detail {
+        display: none;
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+        overflow-x: hidden;
+        padding-left: 2;
+        color: $text-muted;
+    }
     ToolCallRow.expanded .tc-detail, ToolCallRow.file-change .tc-detail { display: block; }
     """
 
@@ -470,7 +510,7 @@ class ToolCallRow(Vertical):
         super().__init__(classes="file-change" if self._file_change else None)
         self.call_id = call_id
         self.tool_name = name
-        self.arguments = arguments
+        self.arguments = clean_terminal_text(arguments)
         try:
             parsed = json.loads(arguments) if arguments else {}
             self.parsed_arguments = parsed if isinstance(parsed, dict) else {}
@@ -504,18 +544,19 @@ class ToolCallRow(Vertical):
 
     def _summary(self) -> Text:
         if self._file_change and self.parsed_arguments.get("path"):
-            args = str(self.parsed_arguments["path"])
+            args = clean_terminal_text(self.parsed_arguments["path"])
         else:
-            args = " ".join(self.arguments.split())
+            args = " ".join(clean_terminal_text(self.arguments).split())
         if len(args) > 60:
             args = args[:59] + "…"
         prefix = Text()
         if self.worker:
             import hashlib as _hl
-            label = self.worker.rsplit('-', 1)[0] if '-' in self.worker else self.worker
+            worker = clean_terminal_text(self.worker)
+            label = worker.rsplit('-', 1)[0] if '-' in worker else worker
             palette = ['cyan', 'yellow', 'green', 'blue', 'magenta', 'red', 'bright_blue', 'bright_green']
             _h = int(_hl.md5(label.encode()).hexdigest()[:8], 16)
-            prefix.append(f"[{self.worker}] ", style=palette[_h % len(palette)])
+            prefix.append(f"[{worker}] ", style=palette[_h % len(palette)])
         if self.ok is None:
             mark, style = _SPINNER[self._spin], "yellow"
         else:
@@ -541,9 +582,9 @@ class ToolCallRow(Vertical):
     ) -> None:
         self.ok = ok
         self.duration_ms = duration_ms
-        self.error = error
+        self.error = clean_terminal_text(error) if error is not None else None
         self.handle = handle
-        self.preview = preview
+        self.preview = clean_terminal_text(preview)
         if self._spin_timer is not None:
             self._spin_timer.stop()
             self._spin_timer = None
@@ -558,11 +599,14 @@ class ToolCallRow(Vertical):
 
     def _file_change_detail(self) -> Text:
         out = Text()
-        path = str(self.parsed_arguments.get("path", "(unknown path)"))
+        path = clean_terminal_text(self.parsed_arguments.get("path", "(unknown path)"))
         out.append(f"path: {path}\n", style="bold")
         if self.tool_name == "write_file":
             out.append("content:\n", style="dim")
-            lines = str(self.parsed_arguments.get("content", "")).splitlines() or [""]
+            lines = [
+                clean_terminal_text(line)
+                for line in str(self.parsed_arguments.get("content", "")).splitlines()
+            ] or [""]
             visible = lines if self.expanded else lines[:FILE_PREVIEW_LINES]
             number_width = max(2, len(str(len(lines))))
             for number, line in enumerate(visible, 1):
@@ -580,8 +624,8 @@ class ToolCallRow(Vertical):
             else:
                 lines = list(
                     difflib.unified_diff(
-                        old.splitlines(),
-                        new.splitlines(),
+                        [clean_terminal_text(line) for line in old.splitlines()],
+                        [clean_terminal_text(line) for line in new.splitlines()],
                         fromfile=f"a/{path}",
                         tofile=f"b/{path}",
                         lineterm="",
@@ -615,10 +659,11 @@ class ToolCallRow(Vertical):
             out.append("参数:\n", style="dim")
             out.append(f"{self.arguments}\n", style="dim")
         if self.error:
-            out.append(f"└ 错误: {self.error}\n", style="red")
+            out.append(f"└ 错误: {clean_terminal_text(self.error)}\n", style="red")
         if self.preview and not self._file_change:
-            preview = self.preview[:1024]
-            if len(self.preview) > 1024:
+            cleaned_preview = clean_terminal_text(self.preview)
+            preview = cleaned_preview[:1024]
+            if len(cleaned_preview) > 1024:
                 preview += "…"
             lines = preview.splitlines() or [preview]
             out.append("输出:\n", style="dim")
@@ -659,8 +704,20 @@ class AgentStreamBlock(Vertical):
     """
 
     DEFAULT_CSS = """
-    AgentStreamBlock { height: auto; }
-    AgentStreamBlock .agent-text { height: auto; }
+    AgentStreamBlock {
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+        height: auto;
+        overflow-x: hidden;
+    }
+    AgentStreamBlock .agent-text {
+        width: 1fr;
+        min-width: 0;
+        max-width: 100%;
+        height: auto;
+        overflow-x: hidden;
+    }
     """
 
     def __init__(self, worker: str | None = None) -> None:
