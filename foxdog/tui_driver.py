@@ -22,6 +22,23 @@ WINDOWS_ESCAPE_DELAY = 0.35
 _PASTE_DEDUP_WINDOW = 0.30
 
 
+def _paste_key_character(message: events.Key) -> str | None:
+    """Normalize terminal key events to the characters used by Paste text."""
+    character = message.character
+    if character is not None:
+        return character
+    key = getattr(message, "key", "")
+    if key in {"enter", "return"}:
+        return "\r"
+    if key == "tab":
+        return "\t"
+    if key == "space":
+        return " "
+    if isinstance(key, str) and len(key) == 1:
+        return key
+    return None
+
+
 class _PasteDedup:
     """conhost 粘贴双投递去重的纯状态机（平台无关，便于测试）。
 
@@ -35,16 +52,18 @@ class _PasteDedup:
         self._deadline = 0.0
         self._last_paste = ""
         self._last_paste_deadline = 0.0
+        self._skip_optional_lf = False
 
     def note_paste(self, text: str, now: float) -> None:
-        self._pending = text or ""
+        value = text or ""
+        self._pending = value
         self._deadline = now + self._window
-        self._last_paste = text or ""
+        self._last_paste = value.replace("\r\n", "\n").replace("\r", "\n")
         self._last_paste_deadline = now + self._window
 
     def should_drop_paste(self, text: str | None, now: float) -> bool:
         """Drop a duplicate Paste event emitted for the same physical paste."""
-        value = text or ""
+        value = (text or "").replace("\r\n", "\n").replace("\r", "\n")
         if value and value == self._last_paste and now <= self._last_paste_deadline:
             return True
         if now > self._last_paste_deadline:
@@ -55,7 +74,30 @@ class _PasteDedup:
     def should_drop_key(self, character: str | None, now: float) -> bool:
         if not self._pending or now > self._deadline:
             self._pending = ""
+            self._skip_optional_lf = False
             return False
+        if self._skip_optional_lf:
+            self._skip_optional_lf = False
+            if character == "\n":
+                return True
+        if character in {"\r", "\n"}:
+            if self._pending.startswith("\r\n"):
+                self._pending = self._pending[2:]
+                self._skip_optional_lf = character == "\r"
+            elif self._pending.startswith(character):
+                self._pending = self._pending[1:]
+                self._skip_optional_lf = character == "\r"
+            elif character == "\r" and self._pending.startswith("\n"):
+                self._pending = self._pending[1:]
+                self._skip_optional_lf = True
+            else:
+                self._pending = ""
+                self._deadline = 0.0
+                self._skip_optional_lf = False
+                return False
+            if not self._pending:
+                self._deadline = 0.0
+            return True
         if character and self._pending.startswith(character):
             self._pending = self._pending[len(character):]
             if not self._pending:
@@ -64,6 +106,7 @@ class _PasteDedup:
         # 不匹配：重放结束或真实按键，清状态放行
         self._pending = ""
         self._deadline = 0.0
+        self._skip_optional_lf = False
         return False
 
 
@@ -107,13 +150,7 @@ if sys.platform == "win32":
                 super().process_message(message)
                 return
             if isinstance(message, events.Key):
-                character = message.character
-                if character is None:
-                    key = getattr(message, "key", "")
-                    if key == "space":
-                        character = " "
-                    elif isinstance(key, str) and len(key) == 1:
-                        character = key
+                character = _paste_key_character(message)
                 if self._paste_dedup.should_drop_key(character, now):
                     return
             super().process_message(message)

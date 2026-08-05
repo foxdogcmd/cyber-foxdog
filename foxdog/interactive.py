@@ -56,7 +56,7 @@ from .store.rollout import RunSummary, find_run_summary, list_run_summaries, rep
 from .tools import ToolContext, ToolRegistry
 from .tools.builtin.config_edit import register_config_tools
 from .tools.builtin.copilot import register_copilot_tools
-from .tui_driver import get_tui_driver_class
+from .tui_driver import _PasteDedup, _paste_key_character, get_tui_driver_class
 from .widgets import (
     ReasoningBlock,
     ToolCallRow,
@@ -165,6 +165,7 @@ _LEAKED_SGR_MOUSE_RE = re.compile(r"(?:\x1b)?\[<\d+;-?\d+;-?\d+[mM]")
 _CTRL_C_EXIT_WINDOW = 2.0
 _CTRL_C_DUPLICATE_WINDOW = 0.08
 _SUBMIT_DUPLICATE_WINDOW = 0.35
+_PASTE_REPLAY_WINDOW = 0.75
 _EVENT_PUMP_LIMIT = 256
 
 
@@ -202,6 +203,7 @@ class CommandInput(TextArea):
         self._pastes: dict[int, str] = {}
         self._paste_seq = 0
         self._last_paste_sig: tuple[str, float] | None = None
+        self._paste_replay = _PasteDedup(window=_PASTE_REPLAY_WINDOW)
         self.password = False  # 兼容旧 Input API：True 时掩码显示（/model api_key）
 
     # ------------------------------------------------------------ 永久聚焦
@@ -253,6 +255,8 @@ class CommandInput(TextArea):
     def clear(self) -> None:
         super().clear()
         self._pastes.clear()
+        self._last_paste_sig = None
+        self._paste_replay = _PasteDedup(window=_PASTE_REPLAY_WINDOW)
 
     # ------------------------------------------------------------ 长粘贴折叠
     async def _on_paste(self, event: events.Paste) -> None:
@@ -261,6 +265,8 @@ class CommandInput(TextArea):
             event.stop()
             event.prevent_default()
             return
+        if text:
+            self._paste_replay.note_paste(text, time.monotonic())
         if text and len(text) > self.PASTE_FOLD_THRESHOLD:
             self._paste_seq += 1
             self._pastes[self._paste_seq] = text
@@ -398,6 +404,14 @@ class CommandInput(TextArea):
 
     async def _on_key(self, event) -> None:
         app = self.app
+        if self._paste_replay.should_drop_key(
+            _paste_key_character(event), time.monotonic()
+        ):
+            event.prevent_default()
+            event.stop()
+            return
+        # Any real key breaks the duplicate Paste event window.
+        self._last_paste_sig = None
         if isinstance(app, ChatApp) and app._resume_picker_active:
             if event.key == "escape":
                 app._hide_resume_picker(cancelled=True)

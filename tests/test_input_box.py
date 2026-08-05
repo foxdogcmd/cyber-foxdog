@@ -162,6 +162,28 @@ async def test_duplicate_paste_event_is_suppressed(tmp_path, monkeypatch):
         await pilot.pause(0.3)
 
 
+async def test_paste_replayed_keys_are_suppressed(tmp_path, monkeypatch):
+    """Paste 后终端重放逐字符 Key（含 CR/LF）时，不应再次插入或触发提交。"""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        inp = app.query_one(CommandInput)
+        app.busy = True
+        await inp._on_paste(events.Paste("a\nb"))
+        for key, character in (
+            ("a", "a"),
+            ("enter", "\r"),
+            ("b", "b"),
+        ):
+            await inp._on_key(events.Key(key, character))
+        await pilot.pause(0.2)
+        assert inp.value == "a\nb"
+        assert app.steer.drain() == []
+        app.busy = False
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
 async def test_duplicate_submit_event_is_suppressed(tmp_path, monkeypatch):
     """Repeated Enter submit events for the same buffer should not double-steer."""
     app = _app(tmp_path, monkeypatch)

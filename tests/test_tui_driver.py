@@ -52,6 +52,17 @@ def test_paste_dedup_single_char_double():
     assert dd.should_drop_key("a", now=10.10) is False  # 只吞一个
 
 
+def test_paste_dedup_normalizes_replayed_enter():
+    """多行粘贴的重复 Enter 不能穿透为提交，CR/LF 应视为同一个换行。"""
+    dd = _PasteDedup(window=0.30)
+    dd.note_paste("a\r\nb", now=20.0)
+    assert dd.should_drop_key("a", now=20.01) is True
+    assert dd.should_drop_key("\r", now=20.02) is True
+    assert dd.should_drop_key("\n", now=20.03) is True
+    assert dd.should_drop_key("b", now=20.04) is True
+    assert dd.should_drop_key("c", now=20.05) is False
+
+
 def test_paste_dedup_drops_duplicate_paste_event():
     """有些 Windows 终端会把同一次粘贴发成两个 Paste 事件。"""
     dd = _PasteDedup(window=0.30)
