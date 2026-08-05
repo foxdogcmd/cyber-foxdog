@@ -297,9 +297,16 @@ async def test_jump_to_bottom_hint(tmp_path, monkeypatch):
         app._write_line("用户阅读期间抵达的新事件")
         await pilot.pause(0.3)
         assert tl.scroll_y == scroll_before  # 新事件不抢走用户的阅读位置
-        app.action_jump_bottom()  # Ctrl+End 回底
+        tl.scroll_end(animate=False)  # 用户自己滚回底部
+        app._refresh_activity()
         await pilot.pause(0.3)
         assert not activity.has_class("jump")
+        assert tl.is_vertical_scroll_end
+        app._write_line("回到底部后的新事件")
+        await pilot.pause(0.3)
+        assert tl.is_vertical_scroll_end
+        app.action_jump_bottom()  # Ctrl+End 仍可显式回底并重新锚定
+        await pilot.pause(0.2)
         assert tl.is_vertical_scroll_end
         _submit(app, "/quit")
         await pilot.pause(0.3)

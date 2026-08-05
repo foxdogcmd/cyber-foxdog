@@ -5,7 +5,7 @@ Budget：max_minutes / max_tokens / max_turns 三维上限，**None=该维度不
 BudgetState：跨 turn 累计消耗（起始时间、累计 tokens），AgentLoop 每个 step 前
 调 check()，超限抛 BudgetExceeded；GoalMode 捕获后 exit 2。
 max_turns 仍由 GoalMode 在 turn 间检查（turn 是 GoalMode 的概念）。
-预算对象可变：/budget 命令运行中直接改 Budget 字段，下一次 check 即生效。
+预算对象可变：/setting 的 set_budget 工具运行中直接改 Budget 字段，下一次 check 即生效。
 """
 from __future__ import annotations
 

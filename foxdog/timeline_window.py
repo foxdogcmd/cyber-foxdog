@@ -41,6 +41,13 @@ _HISTORY_HEAD = "  …（以下为已折叠的历史记录，仅文本；新内�
 class TimelineScroll(VerticalScroll):
     """#timeline 容器：滚轮手势释放 follow anchor（否则锚底会把每次上翻弹回）。"""
 
+    def _anchor_if_at_end(self) -> None:
+        try:
+            if self.max_scroll_y <= 0 or self.is_vertical_scroll_end:
+                self.anchor()
+        except Exception:
+            pass
+
     def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         # Textual's pointer scrolling deliberately passes release_anchor=False
         # to its internal scroll helper. Since the timeline starts anchored to
@@ -53,6 +60,7 @@ class TimelineScroll(VerticalScroll):
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         self.release_anchor()
         super()._on_mouse_scroll_down(event)
+        self.call_after_refresh(self._anchor_if_at_end)
 
 
 @dataclass

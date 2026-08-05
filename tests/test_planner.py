@@ -206,7 +206,7 @@ async def test_cancelled_worker_not_reported_as_completed(tmp_path):
     board.close()
 
 
-async def test_planner_controls_worker_concurrency(tmp_path):
+async def test_user_worker_limit_ignores_planner_desired_workers(tmp_path):
     from foxdog.core.budget import Budget
     from foxdog.swarm.blackboard import Blackboard
     from foxdog.swarm.coordinator import Coordinator
@@ -231,7 +231,7 @@ async def test_planner_controls_worker_concurrency(tmp_path):
     )
     await coord._plan_once()
     assert coord.workers == 4
-    assert coord.desired_workers == 2
+    assert coord.desired_workers == 4
     board.close()
 
 

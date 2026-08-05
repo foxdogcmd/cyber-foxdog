@@ -8,10 +8,10 @@ Workspace/FlagGate/Blackboard 题目级隔离（build_run 每次新建），
 统一解题平台 & UX：
 - /model 引导配模型（双协议，key 不回显，测连接后落盘 0600，热切换）。
 - /setting 全局 copilot：随时可用（解题中走 planner 模型），受限配置工具 +
-  指挥工具（get_status/steer_team/kill_worker/suppress_intent/set_budget）。
+  指挥工具（get_status/steer_team/kill_worker/suppress_intent/set_budget 等）。
 - 时间线工具调用是可折叠 ToolCallRow（dim 摘要，点击/回车展开详情）。
 - Ctrl+C 有选区时复制；无选区时运行中中断、空闲退出，始终走 TUI 清理逻辑。
-- 预算默认无限（None），/budget 动态调整（运行中立即生效）。
+- 预算默认无限（None），可在 /setting 中动态调整（运行中立即生效）。
 - 黑板面板三节渲染（尾部折叠 +N more，intents 状态分组）；/board 全屏切换。
 
 事件泵：emit → SimpleQueue → 定时器渲染；execute_run finally 负责资源清理。
@@ -89,14 +89,11 @@ CONFIG_HINT = (
 HELP_TEXT = """\
 不会用就 /setting 直接说需求（自然语言配置/指挥）。
 任务：
-  /fetch <id|URL>     拉题目描述进输入框（平台 fetch_url 或直接抓 URL）
-  /target <URL>       设下一任务靶机        例：/target http://10.0.0.5:8080
   /format <REGEX>     设下一任务 flag 格式  例：/format PCTF\\{[^{}]*\\}
   /workers <N>        设下一任务 worker 数  例：/workers 4
 配置：
   /model              查看/引导式配置模型（/model list 看当前，/model show 看全部端点及状态）
-  /setting <要求>     对话式配置与指挥      例：/setting worker 数改 6
-  /budget             查看预算；/budget minutes 30 | tokens 500000 | off
+  /setting <要求>     对话式配置与指挥      例：/setting 拉题 42 / 续跑最近任务 / 预算 30 分钟
 控制：
   <打字回车>          解题中 = steer 指挥
   Esc                 中断当前任务（/board 全屏时 = 返回）
@@ -106,8 +103,6 @@ HELP_TEXT = """\
   /quit               退出
 查看：
   /board              全屏黑板视图（再按或 Esc 返回）
-  /runs               历史 run
-  /resume [run_id]    无缝续跑上一任务（省略则续最近一个）
   /help               本清单"""
 
     # /model 引导式配置：菜单步骤（↑↓ 选择回车确认，Esc 任意步取消）
@@ -141,9 +136,11 @@ SETTING_SYSTEM = """\\
 1. 配置：list_deepseek_models 查官方实时模型列表、set_model（protocol 认 openai/responses/anthropic）、
    set_platform（平台地址/worker 数）、set_runtime（local/Docker 工具环境）、
    configure_claude_code（容器 Claude + 本机 CC Switch 配置注入）、
-   add/remove_mcp_server、set_agent（权限/步数/预算）、get_config 看现状。
+   add/remove_mcp_server、set_agent（权限/步数/预算）、get_config 看现状；
+   set_task_options 设置本会话下一题 target/flag 格式/worker 数。
 2. 指挥（解题中）：get_status 看任务/worker/token 状态、steer_team 指挥全体方向、
-   kill_worker 终止某个 worker、suppress_intent 压制某个方向、set_budget 动态调预算。
+   kill_worker 终止某个 worker、suppress_intent 压制某个方向、set_budget 动态调预算；
+   list_runs 查历史、resume_run 续跑、fetch_challenge 拉题到输入框。
 
 常见配置模板：
 - DeepSeek（OpenAI 格式）：protocol=openai, base_url=https://api.deepseek.com
@@ -514,15 +511,15 @@ class ChatApp(App):
     #timeline { width: 1fr; padding: 1 2 0 2; }
     #board {
         display: none;
-        width: 46;
-        min-width: 40;
-        max-width: 34%;
+        width: 52;
+        min-width: 44;
+        max-width: 36%;
         background: $surface;
         border-left: solid $primary-darken-2;
     }
     #board-title {
-        height: 2;
-        padding: 0 1;
+        height: 3;
+        padding: 1 1 0 1;
         color: $primary;
         text-style: bold;
         background: $surface-lighten-1;
@@ -531,7 +528,7 @@ class ChatApp(App):
     #board .board-section {
         height: auto;
         max-height: 33%;
-        padding: 1 1 0 1;
+        padding: 1 1;
         border-bottom: solid $primary-darken-3;
         overflow-y: auto;
     }
@@ -660,6 +657,7 @@ class ChatApp(App):
         self.opt_target: str | None = None
         self.opt_format: str | None = None
         self.opt_workers = 1
+        self._session_task_options_dirty = False
         # 时间线状态
         self._stream_widgets: dict[tuple[str | None, str], AgentStreamBlock] = {}
         self._stream_raw: dict[tuple[str | None, str], str] = {}
@@ -688,7 +686,7 @@ class ChatApp(App):
         # 平台监控：poll_seconds>0 时定时轮询平台状态，缓存题目计数/列表
         self._platform_stats: dict[str, Any] = {"total": None, "solved": None, "challenges": []}
         self._platform_monitor = False  # 是否启用了平台监控面板
-        # resume 选择器：由 `foxdog resume` 或空参数 `/resume` 打开。
+        # resume 选择器：由 `foxdog resume` 或内部续跑入口打开。
         self._resume_picker_active = False
         self._resume_candidates: list[RunSummary] = []
         self._resume_from: Path | None = None
@@ -702,15 +700,10 @@ class ChatApp(App):
             SlashCommand("/help", "命令清单", lambda a: self._write_line(HELP_TEXT)),
             SlashCommand("/model", "查看/配置模型", self._cmd_model),
             SlashCommand("/setting", "对话式配置与指挥", self._cmd_setting),
-            SlashCommand("/budget", "查看/动态调整预算", self._cmd_budget),
             SlashCommand("/board", "全屏黑板视图切换", self._cmd_board),
-            SlashCommand("/fetch", "拉取题目描述进输入框", self._cmd_fetch),
             SlashCommand("/mode", "切换权限模式 yolo|plan", self._cmd_mode),
             SlashCommand("/workers", "设置下一任务 worker 数", self._cmd_workers),
-            SlashCommand("/target", "设置下一任务靶机地址", self._cmd_target),
             SlashCommand("/format", "设置下一任务 flag 格式正则", self._cmd_format),
-            SlashCommand("/runs", "列出历史 run", lambda a: self._show_runs()),
-            SlashCommand("/resume", "续跑上一任务（/resume [run_id]）", self._cmd_resume),
             SlashCommand("/new", "清空对话历史开新会话", self._cmd_new),
   # /cancel removed — Esc cancels setup and overlays
             SlashCommand("/quit", "退出", lambda a: asyncio.create_task(self.action_quit())),
@@ -1434,6 +1427,10 @@ class ChatApp(App):
             w.set_class(True, "jump")
             w.update("Jump to bottom (ctrl+End) ↓", layout=False)
             return
+        try:
+            tl.anchor()
+        except Exception:
+            pass
         w.set_class(False, "jump")
         if self.busy and self.current_run is not None:
             run = self.current_run
@@ -1866,7 +1863,7 @@ class ChatApp(App):
         if self._board_full:
             self._refresh_board()
 
-    # ------------------------------------------------------------ /budget
+    # ------------------------------------------------------------ budget helper（用户侧走 /setting）
     def _cmd_budget(self, arg: str) -> None:
         if self.session is None:
             return
@@ -1887,7 +1884,7 @@ class ChatApp(App):
             self.apply_budget(**{parts[0]: value})
             self._write_line(f"预算已调整：{self.session.cfg.budget.describe()}（运行中立即生效）", "magenta")
             return
-        self._write_line("用法: /budget | /budget minutes 30 | tokens 500000 | turns 20 | off", "red")
+        self._write_line("用法：在 /setting 中说“预算 30 分钟 / tokens 500000 / turns 20 / 取消预算”。", "red")
 
     def apply_budget(
         self,
@@ -1959,10 +1956,10 @@ class ChatApp(App):
         if isinstance(extra, dict):
             for name, cfg in extra.items():
                 lines.append(_fmt(f"extra:{name}", cfg if isinstance(cfg, dict) else {}))
-        # 运行态：当前会话是否就绪、swarm worker 上限（实际数由 planner 动态收敛）
+        # 运行态：当前会话是否就绪、swarm worker 上限（实际派发仍受 open intent 数量限制）
         if self.session is not None:
             ready = "就绪" if self._provider_ready() else "未就绪"
-            lines.append(f"  会话状态：{ready}；swarm worker 上限 {self.opt_workers}（实际并发由 planner 每拍动态决定）")
+            lines.append(f"  会话状态：{ready}；swarm worker 上限 {self.opt_workers}（按可执行方向自动填槽）")
         return "\n".join(lines)
 
     def _cmd_model(self, arg: str) -> None:
@@ -2254,6 +2251,7 @@ class ChatApp(App):
         """
         assert self.session is not None
         self._setting_busy = True
+        self._session_task_options_dirty = False
         self._refresh_shortcuts()
         background = BackgroundRegistry()
         try:
@@ -2332,7 +2330,11 @@ class ChatApp(App):
         data = self.store.data
         before_solver = dict(cfg.solver.model_dump())
         if data.get("platform"):
+            before_platform = cfg.platform.model_dump()
             cfg.platform = PlatformConfig(**data["platform"])
+            if cfg.platform.model_dump() != before_platform and not self._session_task_options_dirty:
+                self.opt_workers = cfg.platform.default_workers if cfg.platform.default_workers >= 1 else 1
+                self.opt_format = cfg.platform.flag_format or None
         if data.get("agent"):
             cfg.agent = AgentConfig(**{**cfg.agent.model_dump(), **data["agent"]})
             self.session.permission.set_mode(cfg.agent.mode)
@@ -2377,14 +2379,14 @@ class ChatApp(App):
                 cfg.planner = next(iter(cfg.planner_endpoints.values()))
         self._refresh_status()
 
-    # ------------------------------------------------------------ /fetch
+    # ------------------------------------------------------------ fetch helper（用户侧走 /setting）
     def _cmd_fetch(self, arg: str) -> None:
         if self.session is None:
             self._write_line(CONFIG_HINT, "yellow")
             return
         asyncio.create_task(self._fetch_task(arg))
 
-    async def _fetch_task(self, arg: str) -> None:
+    async def _fetch_task(self, arg: str) -> bool:
         assert self.session is not None
         platform = self.session.cfg.platform
         # 配置了平台 fetch_url：走 platform.fetch_challenge（解析 JSON 正文 + 下载附件）
@@ -2395,43 +2397,44 @@ class ChatApp(App):
                 text, paths = await fetch_challenge(platform, arg, download_dir=dl_dir)
             except Exception as exc:  # noqa: BLE001 - 拉取失败只提示
                 self._write_line(f"平台拉取失败: {type(exc).__name__}: {exc}", "red")
-                return
+                return False
             content = " ".join(str(text).split())[:4000]
             self.query_one(CommandInput).value = content
             if paths:
                 names = ", ".join(p.name for p in paths)
                 self._write_line(f"已下载 {len(paths)} 个附件到 {dl_dir}：{names}", "green")
             self._write_line(f"题目已拉取到输入框（id={arg}），确认后回车开任务。", "magenta")
-            return
+            return True
         # 未配置平台或直接给 URL：抓正文塞输入框
         if platform.fetch_url:
             url = platform.fetch_url.replace("{id}", arg) if arg else platform.fetch_url
         elif arg:
             url = arg
         else:
-            self._write_line("用法: /fetch <题目id|URL>（未配置 platform.fetch_url 时参数当 URL）", "red")
-            return
+            self._write_line("请提供题目 id 或 URL；未配置 platform.fetch_url 时参数会按 URL 拉取。", "red")
+            return False
         try:
             async with httpx.AsyncClient(timeout=10.0, verify=False, follow_redirects=True) as client:
                 resp = await client.get(url)
             content = " ".join(resp.text.split())[:4000]
         except Exception as exc:  # noqa: BLE001 - 拉取失败只提示
             self._write_line(f"拉取失败: {type(exc).__name__}: {exc}", "red")
-            return
+            return False
         if not content:
             self._write_line(f"拉取为空（HTTP {resp.status_code}）：{url}", "yellow")
-            return
+            return False
         self.query_one(CommandInput).value = content
         self._write_line(f"题目已拉取到输入框（{url}），确认后回车开任务。", "magenta")
+        return True
 
-    # ------------------------------------------------------------ /runs
+    # ------------------------------------------------------------ runs / resume helpers（用户侧走 /setting 或 CLI resume）
     def _show_runs(self) -> None:
         summaries = list_run_summaries(self._workspace, limit=15)
         if not summaries:
             self._write_line("（还没有任何 run）", "dim")
             return
         rows = [f"{item.run_id}  {item.objective[:30]}  {item.flag or '—'}" for item in summaries]
-        self._write_line("历史 run（最近 15 个，最新在下；/resume 可无缝续跑）：\n" + "\n".join(rows))
+        self._write_line("历史 run（最近 15 个，最新在下；可在 /setting 中要求续跑）：\n" + "\n".join(rows))
 
     @staticmethod
     def _resume_run_label(item: RunSummary) -> str:
@@ -2441,12 +2444,12 @@ class ChatApp(App):
         return f"{item.run_id}  {when}  {tag}  {objective}"
 
     def _show_resume_picker(self) -> None:
-        """/resume 无参数：↑↓ 选择历史 run（codex/kimi-code 风格），回车无缝续跑。"""
+        """无参数续跑入口：↑↓ 选择历史 run（codex/kimi-code 风格），回车无缝续跑。"""
         if self.busy:
-            self._write_line("当前有任务在跑，先等它结束或 Esc 中断再 /resume。", "yellow")
+            self._write_line("当前有任务在跑，先等它结束或 Esc 中断再续跑。", "yellow")
             return
         if self.session is None or not self._provider_ready():
-            self._write_line("/resume 依赖模型，请先 /model 配置模型。", "yellow")
+            self._write_line("续跑依赖模型，请先 /model 配置模型。", "yellow")
             return
         summaries = list_run_summaries(self._workspace)
         if not summaries:
@@ -2484,7 +2487,7 @@ class ChatApp(App):
         self._resume_run(run_id)
 
     def _cmd_resume(self, arg: str) -> None:
-        """/resume [run_id]：无缝续跑上一任务。省略 run_id 弹 ↑↓ 选择菜单。"""
+        """内部续跑入口：指定 run_id 则直接续跑，省略则弹 ↑↓ 选择菜单。"""
         if not arg.strip():
             self._show_resume_picker()
             return
@@ -2493,14 +2496,14 @@ class ChatApp(App):
     def _resume_run(self, run_id: str) -> None:
         """重放指定 run 的历史（assistant/tool_result）后无缝继续解题。"""
         if self.busy:
-            self._write_line("当前有任务在跑，先等它结束或 Esc 中断再 /resume。", "yellow")
+            self._write_line("当前有任务在跑，先等它结束或 Esc 中断再续跑。", "yellow")
             return
         if self.session is None or not self._provider_ready():
-            self._write_line("/resume 依赖模型，请先 /model 配置模型。", "yellow")
+            self._write_line("续跑依赖模型，请先 /model 配置模型。", "yellow")
             return
         item = find_run_summary(self._workspace, run_id)
         if item is None:
-            self._write_line(f"找不到可续跑的 run：{run_id}。/runs 查看。", "red")
+            self._write_line(f"找不到可续跑的 run：{run_id}。可在 /setting 中列出历史 run。", "red")
             return
         history = replay_history(item.path / "rollout.jsonl")
         if not item.objective:

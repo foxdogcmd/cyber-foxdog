@@ -1,4 +1,4 @@
-"""统一平台：ConfigStore 读写、/model 引导配置、/setting 对话配置、命令补全、平台自动提交、/fetch。"""
+"""统一平台：ConfigStore 读写、/model 引导配置、/setting 对话配置、命令补全、平台自动提交、fetch。"""
 from __future__ import annotations
 
 import asyncio
@@ -42,6 +42,16 @@ async def _wait_idle(app: ChatApp, pilot, timeout: float = 30.0) -> None:
         if not app.busy and (task is None or task.done()):
             return
     raise AssertionError("超时未空闲")
+
+
+async def _wait_copilot_done(app: ChatApp, pilot, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause(0.2)
+        task = getattr(app, "_solve_task_copilot", None)
+        if task is not None and task.done():
+            return
+    raise AssertionError("超时未完成 /setting")
 
 
 # ------------------------------------------------------------ ConfigStore
@@ -162,6 +172,41 @@ async def test_setting_conversational(tmp_path, monkeypatch):
         await pilot.pause(0.5)
 
 
+async def test_setting_task_options_tool_controls_next_run_options(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOXDOG_PROVIDER", "fake")
+    config_path = tmp_path / "config.toml"
+    store = ConfigStore(config_path)
+    store.set_platform(default_workers=2, flag_format="OLD\\{.*\\}")
+    store.save()
+    script = [
+        ("tool", "set_task_options", {
+            "target": "http://x:8080",
+            "flag_format": "flag\\{.*\\}",
+            "workers": 4,
+        }),
+        ("text", "下一题参数已设置"),
+    ]
+    real_build_session = runner_mod.build_session
+
+    async def patched(**kwargs):
+        session = await real_build_session(**kwargs)
+        session.provider = FakeProvider(script=script)
+        return session
+
+    monkeypatch.setattr("foxdog.interactive.build_session", patched)
+    app = ChatApp(workspace=tmp_path, overrides=["runtime.kind=local"], config_path=config_path)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        _submit(app, "/setting 下一题 target http://x:8080，flag 格式 flag，worker 4")
+        await _wait_copilot_done(app, pilot)
+        assert app.opt_target == "http://x:8080"
+        assert app.opt_format == "flag\\{.*\\}"
+        assert app.opt_workers == 4
+        assert "/target" not in {sc.name for sc in app._commands}
+        _submit(app, "/quit")
+        await pilot.pause(0.5)
+
+
 async def test_setting_requires_model(tmp_path, monkeypatch):
     monkeypatch.setenv("FOXDOG_PROVIDER", "fake")
     app = ChatApp(workspace=tmp_path, overrides=["runtime.kind=local"], config_path=tmp_path / "c.toml")
@@ -203,6 +248,7 @@ async def test_autocomplete_flow(tmp_path, monkeypatch):
         inp.value = "/se"
         await pilot.pause(0.3)
         assert app._ac_visible and "/setting" in app._ac_names()
+        assert not {"/runs", "/resume", "/target", "/fetch", "/budget"} & set(app._ac_names())
         app._ac_hide()
         assert not app._ac_visible
         _submit(app, "/quit")
@@ -263,7 +309,7 @@ async def test_platform_auto_submit(tmp_path, monkeypatch):
     assert any(getattr(e, "kind", "") == "swarm_note" and "已自动提交平台" in e.message for e in events)
 
 
-# ------------------------------------------------------------ /fetch
+# ------------------------------------------------------------ fetch 内部入口（用户侧走 /setting）
 async def test_fetch_with_platform_url(tmp_path, monkeypatch):
     monkeypatch.setenv("FOXDOG_PROVIDER", "fake")
     _RecordingClient.calls = []
@@ -272,8 +318,8 @@ async def test_fetch_with_platform_url(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause(0.5)
         app.session.cfg.platform.fetch_url = "http://x/api/chal/{id}"
-        _submit(app, "/fetch 42")
-        await pilot.pause(0.5)
+        assert await app._fetch_task("42")
+        await pilot.pause(0.2)
         assert _RecordingClient.calls[0]["url"] == "http://x/api/chal/42"  # {id} 替换
         assert "题目已拉取到输入框" in _timeline(app)
         assert app.query_one(CommandInput).value  # 内容进了输入框
@@ -288,8 +334,8 @@ async def test_fetch_fallback_plain_url(tmp_path, monkeypatch):
     app = ChatApp(workspace=tmp_path, overrides=["runtime.kind=local"], config_path=tmp_path / "c.toml")
     async with app.run_test() as pilot:
         await pilot.pause(0.5)
-        _submit(app, "/fetch http://y/chal/7")  # 未配置 fetch_url：参数当 URL
-        await pilot.pause(0.5)
+        assert await app._fetch_task("http://y/chal/7")  # 未配置 fetch_url：参数当 URL
+        await pilot.pause(0.2)
         assert _RecordingClient.calls[0]["url"] == "http://y/chal/7"
         assert "题目已拉取到输入框" in _timeline(app)
         _submit(app, "/quit")

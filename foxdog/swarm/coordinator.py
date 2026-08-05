@@ -87,8 +87,7 @@ class Coordinator:
         self.target = target
         self.flag_format = flag_format
         self.workers = max(2, workers)
-        initial_pending = len(self.board.open_intents()) if self.board is not None else 0
-        self.desired_workers = min(self.workers, max(1, initial_pending))
+        self.desired_workers = self.workers
         self.history = history if history is not None else []
         self.race_goal = race_goal
         self.race_minutes = race_minutes
@@ -525,12 +524,9 @@ class Coordinator:
         self._last_plan_created = len(created)
         self._last_plan_verdict = result.verdict
         self._last_plan_summary = result.summary.strip()
-        if result.desired_workers is not None:
-            self.desired_workers = min(self.workers, result.desired_workers)
-        else:
-            # 兼容旧 planner：未给 desired_workers 时，按现有独立工作量自动填槽。
-            pending = len(self.board.open_intents())
-            self.desired_workers = min(self.workers, max(1, pending))
+        # 并发上限由用户配置的 workers 决定；planner 只负责产出可执行 intent。
+        # 实际派发仍由 open_intents 数量限制，不会创建空转 worker。
+        self.desired_workers = self.workers
 
     # ------------------------------------------------------------ worker
     async def _run_worker(self, worker_id: str) -> None:

@@ -105,6 +105,9 @@ async def test_slash_commands(tmp_path, monkeypatch):
         await pilot.pause(0.2)
         help_text = _timeline(app)
         assert "任务：" in help_text and "配置：" in help_text and "控制：" in help_text  # 分组重写后的 /help
+        command_names = {sc.name for sc in app._commands}
+        assert not {"/runs", "/resume", "/target", "/fetch", "/budget"} & command_names
+        assert "/runs" not in help_text and "/resume" not in help_text and "/target" not in help_text
 
         _submit(app, "/mode plan")
         await pilot.pause(0.2)
@@ -115,10 +118,9 @@ async def test_slash_commands(tmp_path, monkeypatch):
         await pilot.pause(0.2)
         assert app.opt_workers == 3
 
-        _submit(app, "/target http://x:8080")
         _submit(app, "/format flag\\{.*\\}")
         await pilot.pause(0.2)
-        assert app.opt_target == "http://x:8080" and app.opt_format == "flag\\{.*\\}"
+        assert app.opt_format == "flag\\{.*\\}"
 
         # /new 清空对话历史
         app.history.append({"role": "user", "content": "旧内容"})

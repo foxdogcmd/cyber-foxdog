@@ -337,7 +337,7 @@ def resume(
 
         app_obj = ChatApp(
             workspace=workspace, overrides=list(overrides),
-            resume_run_id=run_id or "",  # "" → TUI 里列出历史 run 让用户 /resume <id>
+            resume_run_id=run_id or "",  # "" → TUI 里列出历史 run 让用户选择
         )
         run_tui_app(app_obj)
         raise typer.Exit(app_obj.exit_code)

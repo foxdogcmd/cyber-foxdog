@@ -76,8 +76,8 @@ def test_run_id_validation_rejects_path_components():
     assert not valid_run_id("old/run")
 
 
-async def test_resume_bare_command_opens_picker_then_selects(tmp_path, monkeypatch):
-    """交互 /resume（无参数）：↑↓选择菜单，回车确认后重放历史继续解题，新 run 拿到 flag。"""
+async def test_resume_picker_opens_then_selects(tmp_path, monkeypatch):
+    """续跑选择器：↑↓选择菜单，回车确认后重放历史继续解题，新 run 拿到 flag。"""
     monkeypatch.setenv("FOXDOG_PROVIDER", "fake")
     routes = [("读 flag", [("tool", "shell_exec", {"command": READ_CMD}), ("tool", "submit_flag", {"flag": FLAG})])]
     real = runner_mod.build_session
@@ -94,7 +94,7 @@ async def test_resume_bare_command_opens_picker_then_selects(tmp_path, monkeypat
     app = ChatApp(workspace=tmp_path, overrides=["runtime.kind=local"], config_path=tmp_path / "c.toml")
     async with app.run_test() as pilot:
         await pilot.pause(0.5)
-        _submit(app, "/resume")
+        app._show_resume_picker()
         await pilot.pause(0.3)
         # codex/kimi-code 风格：↑↓ 选择菜单已弹出，唯一候选已高亮
         assert app._resume_picker_active
@@ -130,7 +130,7 @@ async def test_resume_picker_escape_cancels(tmp_path, monkeypatch):
     app = ChatApp(workspace=tmp_path, overrides=["runtime.kind=local"], config_path=tmp_path / "c.toml")
     async with app.run_test() as pilot:
         await pilot.pause(0.5)
-        _submit(app, "/resume")
+        app._show_resume_picker()
         await pilot.pause(0.3)
         assert app._resume_picker_active
         await pilot.press("escape")

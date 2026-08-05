@@ -1,4 +1,4 @@
-"""UX 大修：ToolCallRow 折叠、黑板渲染器、/board 全屏、Ctrl+C 语义、/budget、copilot 指挥。"""
+"""UX 大修：ToolCallRow 折叠、黑板渲染器、/board 全屏、Ctrl+C 语义、预算、copilot 指挥。"""
 from __future__ import annotations
 
 import asyncio
@@ -368,22 +368,22 @@ async def test_idle_ctrl_c_confirmation_expires(tmp_path, monkeypatch):
         await pilot.pause(0.3)
 
 
-# ------------------------------------------------------------ /budget
-async def test_budget_command(tmp_path, monkeypatch):
+# ------------------------------------------------------------ 预算内部入口（用户侧走 /setting）
+async def test_budget_internal_entrypoint(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause(0.5)
-        _submit(app, "/budget")
+        app._cmd_budget("")
         await pilot.pause(0.2)
         assert "∞" in app.query_one("#timeline").export_text() if hasattr(app.query_one("#timeline"), "export_text") else "∞" in str(app.session.cfg.budget.describe())
         assert app.session.cfg.budget.max_minutes is None  # 默认无限
-        _submit(app, "/budget minutes 30")
+        app._cmd_budget("minutes 30")
         await pilot.pause(0.2)
         assert app.session.cfg.budget.max_minutes == 30.0
-        _submit(app, "/budget tokens 500000")
+        app._cmd_budget("tokens 500000")
         await pilot.pause(0.2)
         assert app.session.cfg.budget.max_tokens == 500000
-        _submit(app, "/budget off")
+        app._cmd_budget("off")
         await pilot.pause(0.2)
         assert app.session.cfg.budget.max_minutes is None and app.session.cfg.budget.max_tokens is None
         _submit(app, "/quit")

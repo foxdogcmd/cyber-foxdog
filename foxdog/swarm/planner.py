@@ -29,14 +29,12 @@ PLANNER_INSTRUCTION = """\
    category/surface/technique 三元组标定方向（黑板按它去重，别瞎编）；
    lane 仅当该方向会独占危险资源时给（如爆破 8080：brute:tcp:8080@host）。
 6. audit 里列出你不信任的 fact id（编号），没有就空数组。
-7. desired_workers：本轮实际需要的并发 worker 数（1-4），按独立方向数量动态决定，不要机械拉满。
-8. verdict：explore=继续派活；course_correct=方向漂移需要纠偏；complete=确认收工。
+7. verdict：explore=继续派活；course_correct=方向漂移需要纠偏；complete=确认收工。
    complete 只在目标已完成，或所有合理方向都有证据排除时使用；此时 intents 必须为空，
    summary 必须给操作员一段简洁结论（发现、证据、未达成项和建议）。
 
 只输出 JSON（不要任何多余文字）：
 {"verdict": "explore|complete|course_correct",
- "desired_workers": 1,
  "summary": "仅 verdict=complete 时填写最终结论，否则留空",
  "intents": [{"goal": "...", "category": "...", "surface": "...", "technique": "...", "lane": null}] (≤4),
  "audit": [1, 2]}
@@ -55,6 +53,7 @@ class PlanResult(BaseModel):
     verdict: Literal["explore", "complete", "course_correct"] = "explore"
     intents: list[IntentSpec] = Field(default_factory=list)  # 解析后截断到 ≤4
     audit: list[int] = Field(default_factory=list)
+    # Deprecated: coordinator ignores this. Worker concurrency is owned by user config.
     desired_workers: int | None = Field(default=None, ge=1, le=4)
     summary: str = ""
 

@@ -5,7 +5,7 @@
   路径与前 10 行内容，edit_file 默认展示 unified diff，点击展开剩余行。
   进行中用 braille spinner，完成后成功绿/失败红作为常驻历史状态。
 - render_facts/deadends/intents：黑板面板渲染。文本尾部折叠省略（key 信息在前），
-  每节最多 20 条 + "+N more"；intents 按状态分组带图标，每条一行。
+  每节最多 20 条（侧栏紧凑态最多 8 条）+ "+N more"；intents 按状态分组带图标。
 - agent_text：agent 消息着色（`code` 橙色、**粗体**），● 前缀由调用方加。
 - render_todos：任务清单（✓ 灰 / ■ 黄 / □ 默认色）。
 """
@@ -22,6 +22,7 @@ from textual.containers import Vertical
 from textual.widgets import Static
 
 BOARD_LIMIT = 20  # 每节最多条数
+BOARD_COMPACT_LIMIT = 8  # 侧栏紧凑态最多条数，避免未展开时信息过密
 TAIL_LIMIT = 200  # 单条文本尾部折叠长度
 
 _SPINNER = "⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓"
@@ -224,13 +225,15 @@ def render_facts(
     if not facts:
         out.append("  暂无", style="dim italic")
         return out
-    for f in facts[-limit:]:
-        out.append("◆ ", style="cyan")
+    effective_limit = min(limit, BOARD_COMPACT_LIMIT) if compact else limit
+    shown_items = facts[-effective_limit:]
+    for idx, f in enumerate(shown_items):
+        out.append("  ◆ " if compact else "◆ ", style="cyan")
         out.append(tail_fold(f["fact"], 96 if compact else TAIL_LIMIT))
         if f.get("evidence"):
             out.append(f"\n  ↳ {tail_fold(f['evidence'], 72 if compact else 140)}", style="dim cyan")
-        out.append("\n")
-    extra = len(facts) - limit
+        out.append("\n\n" if compact and idx < len(shown_items) - 1 else "\n")
+    extra = len(facts) - effective_limit
     if extra > 0:
         out.append(f"… +{extra} more", style="dim cyan")
     return out
@@ -245,13 +248,15 @@ def render_deadends(
     if not deadends:
         out.append("  暂无", style="dim italic")
         return out
-    for d in deadends[-limit:]:
-        out.append("× ", style="red")
+    effective_limit = min(limit, BOARD_COMPACT_LIMIT) if compact else limit
+    shown_items = deadends[-effective_limit:]
+    for idx, d in enumerate(shown_items):
+        out.append("  × " if compact else "× ", style="red")
         out.append(tail_fold(d["direction"], 64 if compact else 100))
         out.append("\n  ↳ ", style="dim")
         out.append(tail_fold(d["reason"], 72 if compact else 140), style="dim")
-        out.append("\n")
-    extra = len(deadends) - limit
+        out.append("\n\n" if compact and idx < len(shown_items) - 1 else "\n")
+    extra = len(deadends) - effective_limit
     if extra > 0:
         out.append(f"… +{extra} more", style="dim red")
     return out
@@ -272,6 +277,7 @@ def render_intents(
     if not intents:
         out.append("  暂无", style="dim italic")
         return out
+    effective_limit = min(limit, BOARD_COMPACT_LIMIT) if compact else limit
     by_status: dict[str, list[dict[str, Any]]] = {k: [] for k in _INTENT_ORDER}
     for i in intents:
         status = i.get("status", "open")
@@ -285,7 +291,7 @@ def render_intents(
         out.append(f"{_INTENT_ICON[status]} {status}", style=f"bold {style}")
         out.append(f"  {len(group)}\n", style="dim")
         for i in group:
-            if shown >= limit:
+            if shown >= effective_limit:
                 break
             goal = tail_fold(" ".join(str(i["goal"]).split()), 64 if compact else 120)
             out.append(f"  {i['id']}", style="dim")
@@ -295,6 +301,8 @@ def render_intents(
                 out.append("]", style="dim")
             out.append(f" {goal}\n")
             shown += 1
+        if compact and shown < effective_limit:
+            out.append("\n")
     extra = len(intents) - shown
     if extra > 0:
         out.append(f"… +{extra} more", style="dim magenta")
@@ -377,8 +385,8 @@ class BoardItem(Vertical):
     """
 
     DEFAULT_CSS = """
-    BoardItem { height: auto; padding: 0 0 0 1; }
-    BoardItem .bi-detail { display: none; padding-left: 2; color: $text-muted; }
+    BoardItem { height: auto; padding: 0 0 1 1; }
+    BoardItem .bi-detail { display: none; padding-left: 3; color: $text-muted; }
     BoardItem.expanded .bi-detail { display: block; }
     BoardItem.foldable:hover .bi-summary { background: $surface-lighten-1; }
     """
