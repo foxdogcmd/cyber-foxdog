@@ -491,12 +491,25 @@ async def test_timeline_windowizer_trims_to_history(tmp_path, monkeypatch):
         assert mounted < total, f"挂载 {mounted} 应 < 总 {total}（未裁剪）"
         assert w._history is not None, "应已生成历史快照 Static"
         assert w._history_text.strip(), "历史快照应含被裁剪条目的文本"
+        history_render = w._history.render().plain
+        assert "已折叠" in history_render
+        assert len(history_render) < 400, "历史 Static 只应渲染短摘要，避免滚动布局长帧"
+        target = _MAX_MOUNTED - 24
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and (w._mounted_count > target or w._trim_scheduled):
+            await pilot.pause(0.1)
+        settled = w._mounted_count
+        assert settled <= target, f"裁剪应收敛到目标 {target} 或以下，当前 {settled}"
+        deadline = time.monotonic() + 5
+        while app.busy and time.monotonic() < deadline:
+            await pilot.pause(0.1)
         # 滚动不改变挂载数（单向：滚动不触发挂载操作，这是不卡死的核心保证）
         tl = app.query_one("#timeline")
+        before = sum(1 for e in w._entries if e.is_mounted)
         tl.scroll_relative(y=-10000, animate=False)
-        await pilot.pause(0.5)
+        await pilot.pause(0.3)
         mounted2 = sum(1 for e in w._entries if e.is_mounted)
-        assert mounted2 == mounted, f"滚动不应改变挂载数 {mounted} → {mounted2}（单向裁剪）"
+        assert mounted2 == before, f"滚动不应改变挂载数 {before} → {mounted2}（单向裁剪）"
         _submit(app, "/quit")
         await pilot.pause(0.3)
 

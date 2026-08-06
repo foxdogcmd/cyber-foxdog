@@ -1,19 +1,20 @@
-"""Timeline 视口窗口化：单向裁剪旧 widget，合并成顶部只读历史快照。
+"""Timeline 视口窗口化：单向裁剪旧 widget，合并成顶部只读历史摘要。
 
 根因：#timeline 是单个 VerticalScroll，每个事件 mount 一个 widget 且永不卸载，
 Textual 滚动时 layout/compositing 成本随挂载 widget 总数线性增长 → 长任务卡顿。
 
 策略（单向裁剪，2026-08-05 重写）：维护有序逻辑条目列表。挂载数超过 _MAX_MOUNTED
-时，从最旧的非 pinned 条目起卸载一批，把它们的纯文本渲染追加进 child 0 的单个
-只读历史 Static（一个 widget，height:auto，文本增长不增 widget 数）。
+时，从最旧的非 pinned 条目起分帧卸载一批，把它们的纯文本快照追加进内部历史，
+并只在 child 0 渲染一行只读历史摘要（一个 widget，文本增长不增渲染成本）。
 
 **关键：滚动不再触发任何 mount/unmount。** 旧方案在滚动回调里 fold/unfold 重建
 上百 widget，改变内容高度又反过来触发滚动回调，与 Textual scroll anchor 冲突，
 形成 fold↔scroll 抖动/卡死（用户实测"滚不动"）。单向裁剪彻底断开这条重入路径：
-滚回顶部看到的是静态历史文本快照，交互 widget 只在视口附近保留。
+滚回顶部看到的是静态历史摘要，交互 widget 只在视口附近保留。
 
-流式中的块（pinned）永不裁剪。裁剪只在 append 时按增量计数触发，O(裁剪数) 而非
-O(总条目数)；滚动回调是纯空操作（只维护基线，不扫描不挂载）。
+流式中的块（pinned）永不裁剪。裁剪只在 append 时按增量计数触发，并用短定时器拆成
+小切片执行，避免一次 remove/render 过多 widget 把滚轮帧卡住；滚动回调是纯空
+操作（只维护基线，不扫描不挂载）。
 
 线程模型：所有方法在 Textual 主循环（asyncio）调用。裁剪期间设重入锁，防止
 mount(before=0) 引发的 scroll_y 变化递归回裁剪。
@@ -31,11 +32,17 @@ from textual.widgets import Static
 # 计数兜底：最多保留这么多已挂载条目（防超长任务把树撑大）。
 # 每条是独立 widget，Textual layout 成本 ∝ 挂载 widget 数；滚动视口不需要保留整场历史。
 _MAX_MOUNTED = 96
-# 每次裁剪把挂载数降到 _MAX_MOUNTED - _TRIM_BATCH，避免每 append 都触发裁剪（迟滞）。
+# 每轮裁剪把挂载数降到 _MAX_MOUNTED - _TRIM_BATCH，避免每 append 都触发裁剪（迟滞）。
 _TRIM_BATCH = 24
-# 历史快照 Static 里保留的最大字符数（防超长任务把单个 Static 撑爆）；超出丢最旧。
+# 每个裁剪切片最多卸载的 widget 数。保持极小值，避免滚轮期间出现周期性长帧。
+_TRIM_SLICE = 4
+# 分片裁剪间隔；独立于 Textual 是否触发下一次 repaint，保证后台回收能追上。
+_TRIM_INTERVAL = 0.02
+# 内部历史快照保留的最大字符数（屏幕只渲染摘要）；超出丢最旧。
 _HISTORY_MAX_CHARS = 60_000
-_HISTORY_HEAD = "  …（以下为已折叠的历史记录，仅文本；新内容在下方）\n"
+_HISTORY_ENTRY_MAX_CHARS = 1_200
+_HISTORY_RENDER_TAIL_CHARS = 160
+_HISTORY_HEAD = "… 已折叠 {count} 条历史；新内容在下方"
 
 
 class TimelineScroll(VerticalScroll):
@@ -121,6 +128,44 @@ def _plain_of(widget: Any) -> str:
         return ""
 
 
+def _compact_snapshot(text: str, limit: int = _HISTORY_ENTRY_MAX_CHARS) -> str:
+    text = "\n".join(line.rstrip() for line in text.splitlines()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _snapshot_of(entry: Entry) -> str:
+    """Return a cheap text snapshot for folded history.
+
+    Prefer widget-owned cached text / summaries over walking every descendant;
+    expanded tool details and long agent bodies are exactly the cases that made
+    trim slices show up as scroll stutters.
+    """
+    widget = entry.widget
+    if widget is None:
+        return ""
+    try:
+        if entry.kind == "agent" and hasattr(widget, "_body_raw"):
+            body = getattr(widget, "_body_raw", "") or ""
+            worker = getattr(widget, "worker", None)
+            prefix = f"[{worker}] ● " if worker else "● "
+            return _compact_snapshot(prefix + body.lstrip("\r\n"))
+        if entry.kind == "tool" and hasattr(widget, "_summary"):
+            summary = widget._summary()  # type: ignore[attr-defined]
+            text = summary.plain if isinstance(summary, Text) else str(summary)
+            return _compact_snapshot(text)
+        if entry.kind == "reasoning" and hasattr(widget, "snapshot"):
+            snap = widget.snapshot()
+            footer = str(snap.get("footer", "")).strip()
+            buffer = str(snap.get("buffer", "")).strip()
+            text = footer or buffer
+            return _compact_snapshot(text)
+    except Exception:
+        return ""
+    return _compact_snapshot(_plain_of(widget))
+
+
 class TimelineWindowizer:
     """管理 #timeline 的挂载/裁剪。把挂载总数从 O(事件数) 降到 O(视口)。
 
@@ -134,10 +179,12 @@ class TimelineWindowizer:
         # 顶部只读历史快照（单个 Static，累积被裁剪条目的纯文本）
         self._history: Static | None = None
         self._history_text = ""
+        self._history_count = 0
         # 增量维护的已挂载非 pinned 条目数（避免每次 append 全表 enumerate）
         self._mounted_count = 0
         # 裁剪重入锁：mount(before=0) 会引发 scroll_y 变化，防止递归回裁剪
         self._trimming = False
+        self._trim_scheduled = False
 
     # ------------------------------------------------------------ 条目
     def _container_live(self) -> bool:
@@ -164,32 +211,51 @@ class TimelineWindowizer:
         if not entry.pinned:
             self._mounted_count += 1
         ret = self._container.mount(widget)
-        # 超限立即裁剪最旧一批（不等滚动）：长任务流式累积也保持挂载数有界
+        # 超限后排到短定时器分片裁剪；append 本身不承担大批量 remove/render。
         if self._mounted_count > _MAX_MOUNTED:
-            self._trim_oldest()
+            self._schedule_trim()
         return ret, entry
 
+    def _schedule_trim(self) -> None:
+        if self._trim_scheduled or self._trimming or not self._container_live():
+            return
+        self._trim_scheduled = True
+        try:
+            self._container.set_timer(_TRIM_INTERVAL, self._trim_oldest, name="timeline-trim")
+            scheduled = True
+        except Exception:
+            scheduled = False
+        if not scheduled:
+            self._trim_scheduled = False
+            self._trim_oldest()
+
     def _trim_oldest(self) -> None:
-        """把最旧的非 pinned 已挂载条目裁剪进历史快照，直到挂载数降到目标。
+        """把最旧的非 pinned 已挂载条目裁剪进历史快照，一个刷新只处理小切片。
 
         目标 = _MAX_MOUNTED - _TRIM_BATCH（迟滞：一次裁一批，不是每条都裁）。
         pinned（流式中块）跳过，保留挂载。
         """
+        self._trim_scheduled = False
         if self._trimming or not self._container_live():
             return
         target = _MAX_MOUNTED - _TRIM_BATCH
+        if self._mounted_count <= target:
+            return
         self._trimming = True
         try:
             trimmed_texts: list[str] = []
+            trimmed_count = 0
             for e in self._entries:
                 if self._mounted_count <= target:
+                    break
+                if trimmed_count >= _TRIM_SLICE:
                     break
                 if not e.is_mounted or e.pinned or e.trimmed:
                     continue
                 # 抓纯文本快照（widget 还挂着，能 render）
                 if e.widget is not None:
                     e.expanded = getattr(e.widget, "expanded", False) or e.expanded
-                    text = _plain_of(e.widget)
+                    text = _snapshot_of(e)
                     if text.strip():
                         trimmed_texts.append(text)
                     try:
@@ -200,14 +266,21 @@ class TimelineWindowizer:
                 e.is_mounted = False
                 e.trimmed = True
                 self._mounted_count -= 1
-            if trimmed_texts:
-                self._append_history("\n".join(trimmed_texts))
+                trimmed_count += 1
+            if trimmed_count:
+                self._append_history("\n".join(trimmed_texts), count=trimmed_count)
         finally:
             self._trimming = False
+        if self._mounted_count > target:
+            self._schedule_trim()
 
-    def _append_history(self, text: str) -> None:
-        """把被裁剪条目的纯文本追加进顶部历史 Static（单个 widget，不增挂载数）。"""
-        combined = (self._history_text + "\n" + text) if self._history_text else text
+    def _append_history(self, text: str, *, count: int) -> None:
+        """把被裁剪条目的纯文本追加进内部历史，并只渲染一行轻量摘要。"""
+        self._history_count += count
+        if text:
+            combined = (self._history_text + "\n" + text) if self._history_text else text
+        else:
+            combined = self._history_text
         # 超长截断：丢最旧的一段（保留尾部，靠近视口的更相关）
         if len(combined) > _HISTORY_MAX_CHARS:
             combined = combined[-_HISTORY_MAX_CHARS:]
@@ -215,7 +288,7 @@ class TimelineWindowizer:
             if nl != -1:
                 combined = combined[nl + 1:]
         self._history_text = combined
-        body = Text(_HISTORY_HEAD + combined, style="dim")
+        body = self._history_body()
         if self._history is None or not getattr(self._history, "is_mounted", False):
             ph = Static(body)
             ph.add_class("timeline-placeholder")
@@ -225,15 +298,24 @@ class TimelineWindowizer:
             except Exception:
                 self._history = None
         else:
-            self._history.update(body)
+            self._history.update(body, layout=False)
+
+    def _history_body(self) -> Text:
+        tail = " ".join(self._history_text.split())[-_HISTORY_RENDER_TAIL_CHARS:]
+        body = _HISTORY_HEAD.format(count=self._history_count)
+        if tail:
+            body += f" · 最近：{tail}"
+        return Text(body, style="dim italic", no_wrap=False)
 
     def clear(self) -> None:
         """清空所有条目与挂载（/new 新会话）。"""
         self._entries.clear()
         self._history = None
         self._history_text = ""
+        self._history_count = 0
         self._mounted_count = 0
         self._trimming = False
+        self._trim_scheduled = False
         try:
             self._container.remove_children()
         except Exception:
@@ -248,7 +330,7 @@ class TimelineWindowizer:
             # pin→unpin：现在算入可裁剪挂载数；unpin→pin：从计数移出
             self._mounted_count += 1 if not pinned else -1
             if not pinned and self._mounted_count > _MAX_MOUNTED and not self._trimming:
-                self._trim_oldest()
+                self._schedule_trim()
 
     def find_entry_by_widget(self, widget: Any) -> Entry | None:
         for e in self._entries:
