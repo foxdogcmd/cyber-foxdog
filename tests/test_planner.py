@@ -167,7 +167,7 @@ async def test_spectator_correct_is_directive_not_fact(tmp_path):
 
 
 async def test_spectator_correct_can_close_claimed_intent_and_cancel_worker(tmp_path):
-    """旁观者不仅写纠偏，还能把重复 intent 收尾并取消正在跑的 worker。"""
+    """旁观者关闭 claimed intent 时先请求交接，宽限期到再强制取消。"""
     from foxdog.core.budget import Budget
     from foxdog.swarm.blackboard import Blackboard
     from foxdog.swarm.coordinator import Coordinator
@@ -198,20 +198,101 @@ async def test_spectator_correct_can_close_claimed_intent_and_cancel_worker(tmp_
         objective="审计目标",
         budget=Budget(),
         spectator=CloseSpectator(),
+        spectator_handoff_grace=0.01,
     )
     task = asyncio.create_task(asyncio.sleep(3600))
     coord._worker_tasks["worker-3"] = task
     coord._worker_intents["worker-3"] = iid
 
     assert await coord._spectator_once() is None
-    await asyncio.sleep(0)
+    assert not task.done()
+    assert board.get_intent(iid)["status"] == "claimed"
+    await asyncio.sleep(0.05)
     assert task.cancelled()
     await asyncio.gather(task, return_exceptions=True)
     intent = board.get_intent(iid)
     assert intent["status"] == "barren"
     assert "spectator action" in intent["result"]
+    assert "未在 0.01s 内完成交接" in intent["result"]
     notes = [getattr(event, "message", "") for event in events]
-    assert any("spectator 已关闭" in note and iid in note for note in notes)
+    assert any("spectator 请求 worker-3 收尾交接" in note for note in notes)
+    assert any("spectator 已强制关闭" in note and iid in note for note in notes)
+    board.close()
+
+
+async def test_spectator_graceful_close_collects_worker_handoff(tmp_path):
+    """worker 在宽限期内返回时，用无工具总结 turn 交接并写入黑板 result。"""
+    from foxdog.core.budget import Budget
+    from foxdog.llm.messages import AssistantMessage
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.spectator import SpectatorReview
+
+    board = Blackboard(tmp_path / "spectator-handoff.db")
+    ok, iid = board.create_intent("重复 exploit 分析", "pwn", "local", "exploit")
+    assert ok
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class HandoffProvider:
+        called = False
+
+        async def stream_chat(self, messages, tools, on_delta, **_kwargs):
+            self.called = True
+            assert tools == []
+            assert "旁观者要求收尾交接" in messages[-1]["content"]
+            text = "已确认事实：A 可复用\n已排除/失败：B 不成立\n产物路径/命令输出：work/a.txt\n未完成但可能有用的线索：C"
+            on_delta(text)
+            return AssistantMessage(content=text, usage={"completion_tokens": 5})
+
+    provider = HandoffProvider()
+
+    class HandoffLoop:
+        def __init__(self):
+            self.provider = provider
+
+        async def run_turn(self, history, turn_no=1):
+            started.set()
+            await release.wait()
+            history.append({"role": "assistant", "content": "主分析：发现 A，写了 work/a.txt"})
+
+    class CloseSpectator:
+        async def review(self, *_args, **_kwargs):
+            return SpectatorReview(
+                verdict="correct",
+                close_intents=["I1"],
+                close_reason="重复方向，交给 I2",
+            )
+
+    events = []
+    coord = Coordinator(
+        board=board,
+        planner=SimpleNamespace(),
+        factory=SimpleNamespace(budget_state=None, extra_providers=[], make_loop=lambda wid, provider=None: HandoffLoop()),
+        emit=events.append,
+        rollout=None,
+        gate=SimpleNamespace(solved=False, expected_flags=1, flags=[]),
+        objective="审计目标",
+        budget=Budget(),
+        spectator=CloseSpectator(),
+        spectator_handoff_grace=2.0,
+    )
+    task = asyncio.create_task(coord._run_worker("worker-7"))
+    coord._worker_tasks["worker-7"] = task
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    assert await coord._spectator_once() is None
+    assert board.get_intent(iid)["status"] == "claimed"
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    intent = board.get_intent(iid)
+    assert intent["status"] == "barren"
+    assert "[worker handoff]" in intent["result"]
+    assert "A 可复用" in intent["result"]
+    assert provider.called
+    notes = [getattr(event, "message", "") for event in events]
+    assert any("spectator 优雅关闭" in note and iid in note for note in notes)
     board.close()
 
 

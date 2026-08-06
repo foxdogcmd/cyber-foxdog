@@ -13,14 +13,15 @@ import asyncio
 import itertools
 import re
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from ..core.budget import Budget, BudgetExceeded, BudgetState
 from ..core.goal import EXIT_BUDGET, EXIT_COMPLETE, EXIT_ERROR, EXIT_SOLVED, GoalMode
 from ..core.steer import SteerQueue
 from ..gate.flag_gate import FlagGate
-from ..llm.messages import system_message, user_message
-from ..protocol.types import AgentReasoningDelta, Error, ModelRequestComplete, ModelRequestStarted, SwarmNote
+from ..llm.messages import assistant_to_openai, system_message, user_message
+from ..protocol.types import AgentMessageDelta, AgentReasoningDelta, Error, ModelRequestComplete, ModelRequestStarted, SwarmNote
 from ..store.rollout import RolloutWriter
 from ..tools.builtin.subagent import last_assistant_text
 from .blackboard import Blackboard
@@ -62,6 +63,25 @@ _SPECTATOR_MERGE_RE = re.compile(
 )
 _WORKER_RESULT_LIMIT = 8000
 _WORKER_NOTE_LIMIT = 140
+_SPECTATOR_HANDOFF_GRACE = 15.0
+
+
+@dataclass
+class _WorkerRunState:
+    intent_id: str
+    loop: Any
+    history: list[dict[str, Any]]
+
+
+@dataclass
+class _WorkerHandoff:
+    intent_id: str
+    worker_id: str
+    status: str
+    reason: str
+    requested_at: float
+    deadline: float
+    timer: asyncio.Task | None = None
 
 
 def _compact_worker_note(text: str, limit: int = _WORKER_NOTE_LIMIT) -> str:
@@ -106,6 +126,7 @@ class Coordinator:
         spawn_batch: int = 3,
         race_engines: list[tuple[str, Any, Any]] | None = None,
         spectator: Spectator | None = None,
+        spectator_handoff_grace: float = _SPECTATOR_HANDOFF_GRACE,
     ) -> None:
         self.board = board
         self.planner = planner
@@ -131,6 +152,7 @@ class Coordinator:
         #: race 异构引擎：[（名字, runner 协程函数, GoalMode|None)]；history 挂在 goal.history_ref（遗产交接）
         self.race_engines = list(race_engines or [])
         self.spectator = spectator
+        self.spectator_handoff_grace = max(0.0, spectator_handoff_grace)
         self._last_spectator_version = -1
         self._last_spectator_at = 0.0  # 上次旁观者审查时刻（冷却，避免每次板变动都审）
         #: 收口结论（spectator 或 planner 判定 complete 时写入）→ runner 写进 writeup.md
@@ -146,6 +168,8 @@ class Coordinator:
         #: 在跑 worker：wid → (task, intent_id)，copilot get_status/kill_worker 用
         self._worker_tasks: dict[str, asyncio.Task] = {}
         self._worker_intents: dict[str, str] = {}
+        self._worker_runs: dict[str, _WorkerRunState] = {}
+        self._worker_handoffs: dict[str, _WorkerHandoff] = {}
 
     def set_worker_limit(self, workers: int) -> int:
         """动态调整并发上限；降低时不主动终止已有 worker。"""
@@ -224,6 +248,166 @@ class Coordinator:
             return resolver(ref)
         return ref
 
+    def _request_worker_handoff(self, worker_id: str, intent_id: str, status: str, reason: str) -> bool:
+        """Ask a running worker to summarize before cancellation; timer enforces the deadline."""
+        if worker_id in self._worker_handoffs:
+            return False
+        now = time.monotonic()
+        handoff = _WorkerHandoff(
+            intent_id=intent_id,
+            worker_id=worker_id,
+            status=status,
+            reason=reason,
+            requested_at=now,
+            deadline=now + self.spectator_handoff_grace,
+        )
+        self._worker_handoffs[worker_id] = handoff
+        if self.spectator_handoff_grace <= 0:
+            handoff.timer = asyncio.create_task(self._expire_worker_handoff(worker_id, 0.0))
+        else:
+            handoff.timer = asyncio.create_task(
+                self._expire_worker_handoff(worker_id, self.spectator_handoff_grace)
+            )
+        self.emit(
+            SwarmNote(
+                message=(
+                    f"spectator 请求 {worker_id} 收尾交接 {intent_id}，"
+                    f"{self.spectator_handoff_grace:g}s 后强制取消：{_compact_worker_note(reason)}"
+                ),
+                worker=worker_id,
+            )
+        )
+        return True
+
+    async def _expire_worker_handoff(self, worker_id: str, delay: float) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        handoff = self._worker_handoffs.get(worker_id)
+        if handoff is None:
+            return
+        task = self._worker_tasks.get(worker_id)
+        ok = self.board.complete_intent(
+            handoff.intent_id,
+            handoff.status,
+            (
+                f"[spectator action] {handoff.reason}\n"
+                f"[worker handoff] worker 未在 {self.spectator_handoff_grace:g}s 内完成交接，已强制取消。"
+            ),
+            actor="spectator",
+        )
+        if task is not None and not task.done():
+            task.cancel()
+        if ok:
+            self.emit(
+                SwarmNote(
+                    message=(
+                        f"spectator 已强制关闭 {handoff.intent_id}（{handoff.status}），"
+                        f"已取消 {worker_id}：{_compact_worker_note(handoff.reason)}"
+                    ),
+                    worker=worker_id,
+                )
+            )
+
+    async def _collect_worker_handoff(
+        self,
+        worker_id: str,
+        state: _WorkerRunState,
+        handoff: _WorkerHandoff,
+    ) -> str:
+        remaining = handoff.deadline - time.monotonic()
+        if remaining <= 0:
+            return "交接总结超时。"
+        prompt = (
+            "[旁观者要求收尾交接]\n"
+            f"你的 intent {handoff.intent_id} 将被关闭，原因：{handoff.reason}\n"
+            "请只基于你已经看到的上下文总结，不要调用工具，不要继续解题。"
+            "用四项简短交接：\n"
+            "已确认事实：\n"
+            "已排除/失败：\n"
+            "产物路径/命令输出：\n"
+            "未完成但可能有用的线索："
+        )
+        messages = [dict(item) for item in state.history]
+        messages.append(user_message(prompt))
+        request_id = f"handoff:{worker_id}:{handoff.intent_id}"
+        started = time.monotonic()
+        content_chars = 0
+        reasoning_chars = 0
+        self.emit(ModelRequestStarted(request_id=request_id, turn=2, step=0, worker=worker_id))
+
+        def on_delta(text: str) -> None:
+            nonlocal content_chars
+            content_chars += len(text)
+            if text:
+                self.emit(AgentMessageDelta(request_id=request_id, delta=text, worker=worker_id))
+
+        def on_reasoning_delta(text: str) -> None:
+            nonlocal reasoning_chars
+            reasoning_chars += len(text)
+
+        try:
+            msg = await asyncio.wait_for(
+                state.loop.provider.stream_chat(
+                    messages,
+                    [],
+                    on_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                ),
+                timeout=max(0.1, remaining),
+            )
+        except Exception as exc:  # noqa: BLE001 - 交接失败不应炸协调循环
+            self.emit(
+                ModelRequestComplete(
+                    request_id=request_id,
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                    ok=False,
+                    error=f"{type(exc).__name__}: {exc}",
+                    reasoning_chars=reasoning_chars,
+                    content_chars=content_chars,
+                    worker=worker_id,
+                )
+            )
+            return f"交接总结失败：{type(exc).__name__}: {exc}"
+
+        self.emit(
+            ModelRequestComplete(
+                request_id=request_id,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                finish_reason=msg.finish_reason,
+                reasoning_chars=reasoning_chars,
+                content_chars=content_chars,
+                completion_tokens=msg.usage.get("completion_tokens") if isinstance(msg.usage, dict) else None,
+                worker=worker_id,
+            )
+        )
+        state.history.append(user_message(prompt))
+        state.history.append(assistant_to_openai(msg))
+        return (msg.content or "").strip()
+
+    def _finish_worker_handoff(self, worker_id: str, handoff: _WorkerHandoff, report: str) -> bool:
+        timer = handoff.timer
+        if timer is not None and not timer.done():
+            timer.cancel()
+        self._worker_handoffs.pop(worker_id, None)
+        body = report.strip() or "worker 未提供交接总结。"
+        ok = self.board.finish_claimed(
+            handoff.intent_id,
+            worker_id,
+            handoff.status,
+            f"[spectator action] {handoff.reason}\n[worker handoff]\n{_worker_result(body)}",
+        )
+        if ok:
+            self.emit(
+                SwarmNote(
+                    message=(
+                        f"spectator 优雅关闭 {handoff.intent_id}（{handoff.status}），"
+                        f"交接已写入黑板：{_compact_worker_note(body)}"
+                    ),
+                    worker=worker_id,
+                )
+            )
+        return ok
+
     def _apply_spectator_actions(self, review: SpectatorReview) -> int:
         """Execute spectator scheduling actions; returns number of state changes."""
         if self.board is None:
@@ -262,6 +446,12 @@ class Coordinator:
             intent = self.board.get_intent(intent_id)
             if not intent or intent.get("status") not in ("open", "claimed"):
                 continue
+            worker_id = intent.get("claimed_by")
+            task = self._worker_tasks.get(str(worker_id)) if worker_id else None
+            if intent.get("status") == "claimed" and worker_id and task is not None and not task.done():
+                if self._request_worker_handoff(str(worker_id), intent_id, status, reason):
+                    changed += 1
+                continue
             ok = self.board.complete_intent(
                 intent_id,
                 status,
@@ -271,14 +461,9 @@ class Coordinator:
             if not ok:
                 continue
             changed += 1
-            worker_id = intent.get("claimed_by")
-            task = self._worker_tasks.get(str(worker_id)) if worker_id else None
-            if task is not None and not task.done():
-                task.cancel()
-            worker_note = f"，已取消 {worker_id}" if worker_id and task is not None and not task.done() else ""
             self.emit(
                 SwarmNote(
-                    message=f"spectator 已关闭 {intent_id}（{status}）{worker_note}：{_compact_worker_note(reason)}",
+                    message=f"spectator 已关闭 {intent_id}（{status}）：{_compact_worker_note(reason)}",
                     worker=str(worker_id) if worker_id else None,
                 )
             )
@@ -287,12 +472,14 @@ class Coordinator:
             task = self._worker_tasks.get(worker_id)
             if task is None or task.done():
                 continue
-            task.cancel()
-            changed += 1
             intent_id = self._worker_intents.get(worker_id)
             if intent_id:
-                self.board.finish_claimed(intent_id, worker_id, "barren", f"[spectator cancel] {reason}")
-            self.emit(SwarmNote(message=f"spectator 已取消 {worker_id}：{_compact_worker_note(reason)}", worker=worker_id))
+                if self._request_worker_handoff(worker_id, intent_id, "barren", f"[spectator cancel] {reason}"):
+                    changed += 1
+            else:
+                task.cancel()
+                changed += 1
+                self.emit(SwarmNote(message=f"spectator 已取消 {worker_id}：{_compact_worker_note(reason)}", worker=worker_id))
         return changed
 
     @property
@@ -702,6 +889,7 @@ class Coordinator:
                 + "完成后 complete_intent 汇报；拿到 flag 直接 submit_flag。"
             ),
         ]
+        self._worker_runs[worker_id] = _WorkerRunState(intent_id=intent["id"], loop=loop, history=history)
         report = ""
         cancelled = False
         try:
@@ -719,14 +907,32 @@ class Coordinator:
             report = f"异常: {exc}"
         finally:
             self._worker_intents.pop(worker_id, None)
+            state = self._worker_runs.pop(worker_id, None)
+            handoff = self._worker_handoffs.get(worker_id)
             if self.gate.solved:
                 # flag 已出：无论是否被取消，收尾都算 done（避免把已解出的 intent 记 barren）
+                if handoff is not None:
+                    timer = handoff.timer
+                    if timer is not None and not timer.done():
+                        timer.cancel()
+                    self._worker_handoffs.pop(worker_id, None)
                 self.board.finish_claimed(intent["id"], worker_id, "done", "[flag 已出，收尾]")
                 self._record({"type": "event", "kind": "worker_done", "worker": worker_id, "intent": intent["id"]})
                 self.emit(SwarmNote(message=f"完成 {intent['id']}（flag 已出）", worker=worker_id))
+            elif handoff is not None and handoff.intent_id == intent["id"] and not cancelled:
+                handoff_report = ""
+                if state is not None and time.monotonic() < handoff.deadline:
+                    handoff_report = await self._collect_worker_handoff(worker_id, state, handoff)
+                self._finish_worker_handoff(worker_id, handoff, handoff_report)
+                self._record({"type": "event", "kind": "worker_done", "worker": worker_id, "intent": intent["id"]})
             elif cancelled:
                 # 被抢占（spectator 纠偏 / operator kill / 会话退出）：认领状态由抢占方收口；
                 # 它没收口时才兜底标记，且措辞是"被抢占中断"而非"完成（无汇报）"。
+                if handoff is not None and handoff.intent_id == intent["id"]:
+                    timer = handoff.timer
+                    if timer is not None and not timer.done():
+                        timer.cancel()
+                    self._worker_handoffs.pop(worker_id, None)
                 claimed = self.board.finish_claimed(
                     intent["id"], worker_id, "barren", "[worker 被抢占中断]"
                 )
@@ -890,8 +1096,13 @@ class Coordinator:
                 task.cancel()
             if self._worker_tasks:
                 await asyncio.gather(*self._worker_tasks.values(), return_exceptions=True)
+            for handoff in self._worker_handoffs.values():
+                if handoff.timer is not None and not handoff.timer.done():
+                    handoff.timer.cancel()
             self._worker_tasks.clear()
             self._worker_intents.clear()
+            self._worker_runs.clear()
+            self._worker_handoffs.clear()
         if self.interrupt.is_set() and not self.gate.solved:
             return EXIT_ERROR  # 用户 Esc 中断
         return EXIT_SOLVED
