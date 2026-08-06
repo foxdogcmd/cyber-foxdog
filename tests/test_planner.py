@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from foxdog.core.goal import EXIT_BUDGET, EXIT_COMPLETE, EXIT_ERROR
 from foxdog.llm.client import FakeProvider
 from foxdog.swarm.planner import ReasonPlanner, parse_plan
+from foxdog.swarm.spectator import Spectator, parse_review
 
 VALID = '{"verdict": "explore", "intents": [{"goal": "读 /flag", "category": "file", "surface": "local", "technique": "read"}], "audit": [2]}'
 
@@ -45,6 +46,53 @@ def test_parse_dynamic_workers_and_complete_summary():
     r = parse_plan('{"verdict":"complete","desired_workers":3,"summary":"已完成审计","intents":[]}')
     assert r.desired_workers == 3
     assert r.summary == "已完成审计"
+
+
+def test_parse_spectator_copied_enum_placeholder_infers_continue():
+    r = parse_review('{"verdict":"continue|correct|complete","summary":"无新动作","close_intents":[]}')
+    assert r.verdict == "continue"
+    assert r.summary == "无新动作"
+
+
+def test_parse_spectator_copied_enum_placeholder_with_actions_corrects():
+    r = parse_review(
+        '{"verdict":"continue|correct|complete","instruction":"关闭 I3，I6 已覆盖","close_intents":["I3"]}'
+    )
+    assert r.verdict == "correct"
+    assert r.close_intents == ["I3"]
+
+
+def test_parse_spectator_plain_action_has_teeth():
+    r = parse_review("立即关闭/合并 I3、I6：这些意图已经被黑板事实覆盖。")
+    assert r.verdict == "correct"
+    assert r.close_intents == ["I3", "I6"]
+    assert "关闭/合并" in r.instruction
+
+
+def test_parse_spectator_plain_merge_keeps_first_intent():
+    r = parse_review("把 I12/I13/I14 合并为唯一本地 exploit 任务，保留 I12。")
+    assert r.verdict == "correct"
+    assert r.close_intents == []
+    assert r.merge_groups == [["I12", "I13", "I14"]]
+
+
+def test_parse_spectator_plain_cancel_worker():
+    r = parse_review("取消 worker-3：方向已经偏离目标。")
+    assert r.verdict == "correct"
+    assert r.cancel_workers == ["worker-3"]
+
+
+def test_parse_spectator_garbage_is_silent_continue():
+    r = parse_review("旁观者输出无法解析，保持当前计划")
+    assert r.verdict == "continue"
+    assert r.summary == ""
+
+
+def test_spectator_prompt_uses_real_verdict_examples():
+    prompt = Spectator.build_prompt("目标", "板", "worker", "recent")
+    assert '"continue|correct|complete"' not in prompt
+    assert '"verdict":"continue"' in prompt
+    assert '"verdict":"correct"' in prompt
 
 
 async def test_planner_complete_exits_once_without_retry_loop(tmp_path):

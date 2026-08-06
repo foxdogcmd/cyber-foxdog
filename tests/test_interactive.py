@@ -11,6 +11,7 @@ from foxdog.executor.background import BackgroundRegistry
 from foxdog.executor.process import ExecResult
 from foxdog.interactive import ChatApp, CommandInput
 from foxdog.llm.client import FakeProvider
+from foxdog.protocol.types import SwarmNote
 from foxdog import runner as runner_mod
 
 FLAG = "flag{smoke_test_flag_123}"
@@ -59,6 +60,26 @@ async def test_launch_welcome_and_quit(tmp_path, monkeypatch):
         assert app.session is not None
         _submit(app, "/quit")
         await pilot.pause(0.5)
+
+
+async def test_spectator_note_uses_plain_marker_and_green_style(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOXDOG_PROVIDER", "fake")
+    app = ChatApp(workspace=tmp_path, overrides=["runtime.kind=local"])
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        await app._render_event(SwarmNote(message="spectator：继续观察"))
+        await pilot.pause(0.2)
+        text = _timeline(app)
+        assert "👁" not in text
+        assert "◇ spectator：继续观察" in text
+        line = next(
+            w.render()
+            for w in app.query("#timeline Static")
+            if "spectator：继续观察" in w.render().plain
+        )
+        assert line.spans and str(line.spans[0].style) == "bold bright_green"
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
 
 
 async def test_two_tasks_history_continues(tmp_path, monkeypatch):

@@ -1392,10 +1392,10 @@ class ChatApp(App):
             msg = event.message  # type: ignore[attr-defined]
             if msg.startswith("planner "):
                 self._set_activity("等待 planner 重新规划")
-            # 旁观者消息用独立配色 + 眼睛图标，与 planner/worker 的 ⚑ 区分开
+            # 旁观者消息用独立配色，与 planner/worker 的 ⚑ 区分开。
             low = msg.lower()
             if "spectator" in low or msg.startswith("旁观者") or "旁观者" in msg[:12]:
-                await self._write(Text(f"👁 {prefix}{msg}", style="bold bright_magenta"))
+                await self._write(Text(f"◇ {prefix}{msg}", style="bold bright_green"))
             elif msg.startswith("planner ") or "planner" in msg[:12] or "规划" in msg[:8]:
                 await self._write(Text(f"⚑ {prefix}{msg}", style="cyan"))
             else:
