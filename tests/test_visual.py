@@ -155,6 +155,39 @@ async def test_activity_line(tmp_path, monkeypatch):
         await pilot.pause(0.3)
 
 
+async def test_terminal_title_animates_while_busy(tmp_path, monkeypatch):
+    titles: list[str] = []
+
+    def record_title(app, title: str) -> None:
+        app.title = title
+        titles.append(title)
+
+    monkeypatch.setattr("foxdog.interactive.write_terminal_title", record_title)
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        assert titles and titles[-1] == "foxdog"
+        app.busy = True
+        app.current_run = SimpleNamespace(
+            started=time.monotonic(),
+            loop=SimpleNamespace(budget_state=SimpleNamespace(total_tokens=0)),
+            coordinator=None,
+            gate=SimpleNamespace(flag=None),
+            budget=SimpleNamespace(max_minutes=None),
+        )
+        app._set_activity_animation(True)
+        await pilot.pause(0.25)
+        active_titles = [title for title in titles if title.endswith(" foxdog")]
+        assert len(set(active_titles)) >= 2
+        assert all(title != "powershell" for title in titles)
+        app.busy = False
+        app.current_run = None
+        app._set_activity_animation(False)
+        assert titles[-1] == "foxdog"
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
 async def test_inline_reasoning_is_five_line_dim_italic_tail(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     async with app.run_test(size=(100, 35)) as pilot:

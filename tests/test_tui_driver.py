@@ -11,10 +11,12 @@ from textual._xterm_parser import XTermParser
 
 from foxdog.tui_driver import (
     FoxdogWindowsDriver,
+    TERMINAL_TITLE_SPINNER,
     WINDOWS_ESCAPE_DELAY,
     _PasteDedup,
     get_tui_driver_class,
     run_tui_app,
+    write_terminal_title,
 )
 from foxdog.interactive import _strip_leaked_mouse_reports
 
@@ -59,6 +61,30 @@ def test_paste_dedup_ignores_non_character_keys():
     assert dd.should_drop_key(None, now=12.01) is False
     assert dd.should_drop_key("a", now=12.02) is True
     assert dd.should_drop_key("b", now=12.03) is True
+
+
+def test_write_terminal_title_uses_osc_and_sanitizes_controls():
+    writes: list[str] = []
+    flushed = False
+
+    class Driver:
+        def write(self, value: str) -> None:
+            writes.append(value)
+
+        def flush(self) -> None:
+            nonlocal flushed
+            flushed = True
+
+    class App:
+        _driver = Driver()
+        title = ""
+
+    app = App()
+    write_terminal_title(app, f"{TERMINAL_TITLE_SPINNER[0]} foxdog\x1b]0;bad\x07")
+
+    assert app.title == f"{TERMINAL_TITLE_SPINNER[0]} foxdog]0;bad"
+    assert writes == [f"\x1b]0;{TERMINAL_TITLE_SPINNER[0]} foxdog]0;bad\x07"]
+    assert flushed
 
 
 def test_paste_dedup_normalizes_replayed_enter():

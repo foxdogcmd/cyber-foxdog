@@ -20,6 +20,31 @@ WINDOWS_ESCAPE_DELAY = 0.35
 # 粘贴去重窗口：conhost 把一次粘贴同时投递为 Paste 事件 + 逐字符 Key 事件，
 # 收到 Paste 后此窗口内、与粘贴内容逐字符匹配的 Key 一律丢弃（防 a→aa）。
 _PASTE_DEDUP_WINDOW = 0.30
+TERMINAL_TITLE_SPINNER = "⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓"
+
+
+def _sanitize_terminal_title(title: str) -> str:
+    """Strip control bytes before sending an OSC title update."""
+    return "".join(ch for ch in str(title) if ord(ch) >= 32 and ord(ch) != 127)
+
+
+def write_terminal_title(app: Any, title: str) -> None:
+    """Set the terminal tab/window title when the active driver supports it."""
+    clean = _sanitize_terminal_title(title) or "foxdog"
+    try:
+        app.title = clean
+    except Exception:
+        pass
+    driver = getattr(app, "_driver", None)
+    if driver is None:
+        return
+    try:
+        driver.write(f"\x1b]0;{clean}\x07")
+        flush = getattr(driver, "flush", None)
+        if callable(flush):
+            flush()
+    except Exception:
+        return
 
 
 def _paste_key_character(message: events.Key) -> str | None:

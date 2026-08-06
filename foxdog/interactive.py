@@ -56,7 +56,7 @@ from .store.rollout import RunSummary, find_run_summary, list_run_summaries, rep
 from .tools import ToolContext, ToolRegistry
 from .tools.builtin.config_edit import register_config_tools
 from .tools.builtin.copilot import register_copilot_tools
-from .tui_driver import _PasteDedup, _paste_key_character, get_tui_driver_class
+from .tui_driver import _PasteDedup, _paste_key_character, get_tui_driver_class, write_terminal_title
 from .widgets import (
     ReasoningBlock,
     ToolCallRow,
@@ -723,6 +723,7 @@ class ChatApp(App):
         self._activity_started_at = time.monotonic()
         self._activity_frame = 0
         self._activity_timer: Timer | None = None
+        self._terminal_title_value = ""
         self._terminal_recovery_until = 0.0
         self._idle_ctrl_c_armed_at = 0.0
         # /model 引导式配置状态（None=不在配置流程中）
@@ -805,6 +806,7 @@ class ChatApp(App):
     async def on_mount(self) -> None:
         self.set_interval(0.5, self._tick_half_second)
         self._activity_timer = self.set_interval(0.1, self._tick_activity_animation, pause=True)
+        self._refresh_terminal_title(force=True)
         self.query_one("#timeline", VerticalScroll).anchor()  # 新内容自动锚底，上翻自动脱锚
         # 视口窗口化：卸载视口外旧 widget 换占位符，滚回重建（修滚动卡顿）
         from .timeline_window import TimelineWindowizer
@@ -900,11 +902,12 @@ class ChatApp(App):
             self._refresh_todos()
 
     def _tick_activity_animation(self) -> None:
-        """Fast refresh only while solving; idle sessions keep the timer paused."""
-        if not self.busy or self.current_run is None:
+        """Fast refresh only while work is active; idle sessions keep the timer paused."""
+        if not (self.busy or self._setting_busy):
             return
         self._activity_frame = (self._activity_frame + 1) % len(_ACTIVITY_SPINNER)
         self._refresh_activity()
+        self._refresh_terminal_title()
 
     def _set_activity_animation(self, active: bool) -> None:
         if self._activity_timer is None:
@@ -914,6 +917,17 @@ class ChatApp(App):
             self._activity_timer.resume()
         else:
             self._activity_timer.pause()
+        self._refresh_terminal_title(force=True)
+
+    def _refresh_terminal_title(self, *, force: bool = False) -> None:
+        if self.busy or self._setting_busy:
+            title = f"{_ACTIVITY_SPINNER[self._activity_frame]} foxdog"
+        else:
+            title = "foxdog"
+        if not force and title == self._terminal_title_value:
+            return
+        self._terminal_title_value = title
+        write_terminal_title(self, title)
 
     def _provider_ready(self) -> bool:
         """provider 未配置（无 key）时 TUI 照常启动，提交任务才报错。"""
@@ -2317,6 +2331,10 @@ class ChatApp(App):
         """
         assert self.session is not None
         self._setting_busy = True
+        if not self.busy:
+            self._set_activity_animation(True)
+        else:
+            self._refresh_terminal_title(force=True)
         self._session_task_options_dirty = False
         self._refresh_shortcuts()
         background = BackgroundRegistry()
@@ -2356,6 +2374,7 @@ class ChatApp(App):
         finally:
             await background.stop_all()
             self._setting_busy = False
+            self._set_activity_animation(self.busy)
             self._refresh_shortcuts()
 
     def _open_setting_page(self) -> None:
@@ -2809,4 +2828,7 @@ class ChatApp(App):
                 pass
         if self.session is not None and self.session.mcp_manager is not None:
             await self.session.mcp_manager.close()
+        self.busy = False
+        self._setting_busy = False
+        self._set_activity_animation(False)
         self.exit()

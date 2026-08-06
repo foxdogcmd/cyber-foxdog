@@ -22,7 +22,7 @@ from .core.goal import EXIT_SOLVED
 from .core.steer import SteerQueue
 from .protocol.types import Event
 from .runner import SolveRun, build_run, execute_run
-from .tui_driver import get_tui_driver_class
+from .tui_driver import TERMINAL_TITLE_SPINNER, get_tui_driver_class, write_terminal_title
 
 
 class FoxdogApp(App):
@@ -74,6 +74,8 @@ class FoxdogApp(App):
         self._solve_task: asyncio.Task | None = None
         self._stream_buf = ""  # agent_message_delta 攒行缓冲
         self._done = False
+        self._terminal_title_frame = 0
+        self._terminal_title_value = ""
 
     # ------------------------------------------------------------ 布局
     def compose(self) -> ComposeResult:
@@ -87,6 +89,8 @@ class FoxdogApp(App):
         yield Input(placeholder="steer 指挥… 回车注入 | /quit 退出 | /mode yolo|plan 切权限模式")
 
     async def on_mount(self) -> None:
+        self._refresh_terminal_title(force=True)
+        self.set_interval(0.1, self._tick_terminal_title)
         self.set_interval(0.1, self._pump_events)
         self.set_interval(2.0, self._refresh_board)
         self.set_interval(1.0, self._refresh_status)
@@ -95,8 +99,26 @@ class FoxdogApp(App):
         except Exception as exc:  # noqa: BLE001 - 装配失败直接显示
             self.query_one("#timeline", RichLog).write(f"装配失败: {type(exc).__name__}: {exc}")
             self._done = True
+            self._refresh_terminal_title(force=True)
             return
         self._solve_task = asyncio.create_task(self._execute())
+
+    def _tick_terminal_title(self) -> None:
+        if self._done:
+            self._refresh_terminal_title()
+            return
+        self._terminal_title_frame = (self._terminal_title_frame + 1) % len(TERMINAL_TITLE_SPINNER)
+        self._refresh_terminal_title()
+
+    def _refresh_terminal_title(self, *, force: bool = False) -> None:
+        if self._done:
+            title = "foxdog"
+        else:
+            title = f"{TERMINAL_TITLE_SPINNER[self._terminal_title_frame]} foxdog"
+        if not force and title == self._terminal_title_value:
+            return
+        self._terminal_title_value = title
+        write_terminal_title(self, title)
 
     async def _execute(self) -> None:
         assert self.run is not None
@@ -204,6 +226,7 @@ class FoxdogApp(App):
         if self.run is not None and self.run.writeup_path is not None:
             log.write(Text(f"writeup: {self.run.writeup_path}", style="dim"))
         self._refresh_status()
+        self._refresh_terminal_title(force=True)
 
     # ------------------------------------------------------------ 面板刷新
     def _refresh_board(self) -> None:
@@ -320,4 +343,6 @@ class FoxdogApp(App):
                 await asyncio.wait_for(self._solve_task, timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+        self._done = True
+        self._refresh_terminal_title(force=True)
         self.exit()
