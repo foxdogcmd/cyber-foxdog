@@ -544,11 +544,89 @@ async def test_plan_retries_once_on_bad_json():
     assert provider.calls == 2 and len(r.intents) == 1
 
 
+async def test_valid_empty_plan_does_not_retry_model_request():
+    provider = FakeProvider(script=[("text", '{"verdict":"explore","intents":[],"audit":[]}')])
+    planner = ReasonPlanner(provider)
+    r = await planner.plan("题目", "黑板摘要")
+    assert provider.calls == 1
+    assert r.verdict == "explore" and r.intents == []
+
+
 async def test_plan_gives_up_after_retry():
     provider = FakeProvider(script=[("text", "垃圾1"), ("text", "垃圾2")])
     planner = ReasonPlanner(provider)
     r = await planner.plan("题目", "黑板摘要")
     assert provider.calls == 2 and r.verdict == "explore" and r.intents == []
+
+
+async def test_coordinator_replans_while_worker_capacity_is_unfilled(tmp_path):
+    """A valid empty plan must not strand spare /workers slots behind one long worker."""
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.planner import PlanResult
+
+    board = Blackboard(tmp_path / "planner-refill.db")
+    interrupt = asyncio.Event()
+
+    class RefillPlanner:
+        calls = 0
+        objectives: list[str] = []
+
+        async def plan(self, objective, *_args, **_kwargs):
+            self.calls += 1
+            self.objectives.append(objective)
+            if self.calls == 1:
+                return PlanResult.model_validate(
+                    {
+                        "verdict": "explore",
+                        "intents": [
+                            {
+                                "goal": "长时间验证主路线",
+                                "category": "pwn",
+                                "surface": "local",
+                                "technique": "primary",
+                            }
+                        ],
+                    }
+                )
+            if self.calls >= 3:
+                interrupt.set()
+            return PlanResult(verdict="explore", intents=[])
+
+    planner = RefillPlanner()
+    coord = Coordinator(
+        board=board,
+        planner=planner,
+        factory=SimpleNamespace(budget_state=None),
+        emit=lambda _event: None,
+        rollout=None,
+        gate=SimpleNamespace(solved=False),
+        objective="复杂 pwn 题",
+        budget=Budget(),
+        workers=3,
+        tick=0.005,
+        planner_cooldown=0.01,
+        interrupt=interrupt,
+    )
+
+    async def hold_worker(worker_id: str) -> None:
+        intent = board.claim_intent(worker_id)
+        assert intent is not None
+        coord._worker_intents[worker_id] = intent["id"]
+        try:
+            await asyncio.Event().wait()
+        finally:
+            coord._worker_intents.pop(worker_id, None)
+
+    coord._run_worker = hold_worker  # type: ignore[method-assign]
+    code = await asyncio.wait_for(coord.solve(), timeout=1)
+
+    assert code == EXIT_ERROR
+    assert planner.calls >= 3
+    assert "用户上限=3" in planner.objectives[0]
+    assert "本轮最多新增=3" in planner.objectives[0]
+    board.close()
 
 
 async def test_coordinator_rejects_placeholder_target(tmp_path):

@@ -23,12 +23,12 @@ FLAG = "flag{cancel_test_ok}"
 READ_CMD = "Get-Content -Raw -LiteralPath '..\\..\\flag.txt'" if sys.platform == "win32" else "cat ../../flag.txt"
 
 
-# ------------------------------------------------------------ planner 克制
-def test_planner_prompt_has_restraint_clause():
-    assert "不要为派而派" in PLANNER_INSTRUCTION
-    assert "0-1 个 intent" in PLANNER_INSTRUCTION
-    assert "直接写 exploit" in PLANNER_INSTRUCTION
-    assert "只有证据显示复杂" in PLANNER_INSTRUCTION
+# ------------------------------------------------------------ planner 并发边界
+def test_planner_prompt_respects_operator_owned_worker_limit():
+    assert "worker 数量由用户决定" in PLANNER_INSTRUCTION
+    assert "尽量为本轮缺口" in PLANNER_INSTRUCTION
+    assert "独立产出证据" in PLANNER_INSTRUCTION
+    assert "不要虚构凑数任务" in PLANNER_INSTRUCTION
 
 
 # ------------------------------------------------------------ 取消原语

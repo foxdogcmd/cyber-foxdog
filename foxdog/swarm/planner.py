@@ -19,10 +19,12 @@ PLANNER_INSTRUCTION = """\
 
 规则：
 1. 已知事实、已排除方向、在跑/已完成的 intent 不要重复派发。
-2. **对简单题克制：题目简单、下一步明确时少派（0-1 个 intent），不要为派而派**；
-   当前黑板信息已经能直接写 exploit 时，派 0 个并在 verdict 里说明理由。
-   只有证据显示复杂、且存在多个互相独立的方向时，才并发派满（最多 4 个）。
-3. 优先收敛（验证现有线索、推进在跑方向）而非发散；拿不准就少派。
+2. coordinator 会给出用户设定的并发上限、当前在跑/待领数量和本轮缺口。
+   **worker 数量由用户决定，不由你决定**；在不制造重复工作的前提下，尽量为本轮缺口
+   产出可独立执行的 intent（单轮最多 4 个）。
+3. 优先收敛（验证现有线索、推进在跑方向）而非无关发散。复杂题即使主路线明确，
+   也应把能独立产出证据的工作拆开并行，例如静态原语确认、动态偏移验证、保护/符号
+   核对、exploit 稳定性验证；存在真实依赖时才串行，不要虚构凑数任务。
 4. **互相独立的方向一次多派（最多 4 个并发 intent，worker 会并行认领）**；
    只有相互依赖（B 依赖 A 的结论）的方向才串行——本轮只派 A。
 5. 每个 intent 必须自洽：goal 含具体目标（URL/IP:端口/文件路径）与成功标准；
@@ -61,8 +63,8 @@ class PlanResult(BaseModel):
 _FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
-def parse_plan(text: str) -> PlanResult:
-    """硬解析 planner 输出；任何非法都 fallback 成空 explore（绝不炸协调循环）。"""
+def _parse_plan(text: str) -> tuple[PlanResult, bool]:
+    """Return the parsed plan and whether the payload was valid planner JSON."""
     candidates = [text.strip()]
     m = _FENCE_RE.search(text)
     if m:
@@ -85,8 +87,13 @@ def parse_plan(text: str) -> PlanResult:
         except Exception:  # noqa: BLE001 - 字段级非法
             continue
         result.intents = result.intents[:4]
-        return result
-    return PlanResult()
+        return result, True
+    return PlanResult(), False
+
+
+def parse_plan(text: str) -> PlanResult:
+    """硬解析 planner 输出；任何非法都 fallback 成空 explore（绝不炸协调循环）。"""
+    return _parse_plan(text)[0]
 
 
 class ReasonPlanner:
@@ -114,8 +121,8 @@ class ReasonPlanner:
                 on_delta or (lambda _d: None),
                 on_reasoning_delta=on_reasoning_delta,
             )
-            result = parse_plan(msg.content)
-            # 空结果且模型确实输出了东西 → 视为解析失败，重试一次
-            if result.intents or not msg.content.strip() or attempt == 1:
+            result, parsed = _parse_plan(msg.content)
+            # 合法的空 intents 是调度决策，不是解析失败；只有坏 JSON 才重试。
+            if parsed or not msg.content.strip() or attempt == 1:
                 return result
         return result  # pragma: no cover

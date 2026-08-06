@@ -120,6 +120,7 @@ class Coordinator:
         race_minutes: float = 3.0,
         tick: float = 2.0,
         planner_cooldown: float = 10.0,
+        planner_timeout: float = 180.0,
         spectator_cooldown: float = 30.0,
         steer: SteerQueue | None = None,
         interrupt: asyncio.Event | None = None,
@@ -145,6 +146,7 @@ class Coordinator:
         self.race_minutes = race_minutes
         self.tick = tick
         self.planner_cooldown = planner_cooldown
+        self.planner_timeout = max(0.1, planner_timeout)
         self.spectator_cooldown = spectator_cooldown
         self.steer = steer
         self.interrupt = interrupt or asyncio.Event()  # 用户 Esc 中断（swarm 阶段）
@@ -753,16 +755,36 @@ class Coordinator:
         legacy = getattr(self, "_race_legacy", None)
         if legacy:
             parts.append("race 阶段已探明（冲刺阶段结构化交接）：\n" + "\n".join(legacy))
+        running = sum(not task.done() for task in self._worker_tasks.values())
+        open_count = len(self.board.open_intents())
+        needed = max(0, self.desired_workers - running - open_count)
+        parts.append(
+            "并发调度（由 coordinator 强制，planner 不得修改 worker 数）："
+            f"用户上限={self.desired_workers}，当前在跑={running}，待领={open_count}，"
+            f"本轮最多新增={min(4, needed)} 个独立 intent。"
+        )
         return "\n".join(parts)
 
     #: goal 文本里的占位主机名特征（出现即拒收该 intent）
     _PLACEHOLDER_GOAL_RE = re.compile(r"https?://target\b|//target:|example\.com|占位|<[^>]+>")
 
     async def _plan_once(self) -> None:
-        request_id = f"planner:{next(self._planner_seq)}"
+        plan_seq = next(self._planner_seq)
+        request_id = f"planner:{plan_seq}"
         started = time.monotonic()
         reasoning_chars = 0
         content_chars = 0
+        running = sum(not task.done() for task in self._worker_tasks.values())
+        open_count = len(self.board.open_intents())
+        needed = max(0, self.desired_workers - running - open_count)
+        self.emit(
+            SwarmNote(
+                message=(
+                    f"planner 第 {plan_seq} 轮开始（在跑 {running} / 待领 {open_count} / "
+                    f"缺口 {needed}）"
+                )
+            )
+        )
         self.emit(ModelRequestStarted(request_id=request_id, turn=0, step=0, worker="planner"))
 
         def on_delta(text: str) -> None:
@@ -776,11 +798,14 @@ class Coordinator:
                 self.emit(AgentReasoningDelta(request_id=request_id, delta=text, worker="planner"))
 
         try:
-            result = await self.planner.plan(
-                self._planning_context(),
-                self.board.summary(),
-                on_delta=on_delta,
-                on_reasoning_delta=on_reasoning_delta,
+            result = await asyncio.wait_for(
+                self.planner.plan(
+                    self._planning_context(),
+                    self.board.summary(),
+                    on_delta=on_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                ),
+                timeout=self.planner_timeout,
             )
         except asyncio.CancelledError:
             self.emit(
@@ -842,6 +867,8 @@ class Coordinator:
         )
         if created:
             self.emit(SwarmNote(message=f"planner 新派 {len(created)} 个 intent: {', '.join(created)}"))
+        else:
+            self.emit(SwarmNote(message=f"planner 第 {plan_seq} 轮完成：未新增 intent（verdict={result.verdict}）"))
         self._last_plan_created = len(created)
         self._last_plan_verdict = result.verdict
         self._last_plan_summary = result.summary.strip()
@@ -966,6 +993,15 @@ class Coordinator:
         self._extra_provider_idx += 1
         return f"{label}-{seq}"
 
+    def _fill_worker_slots(self) -> int:
+        """Start workers for queued intents up to the operator-owned limit."""
+        free = self.desired_workers - len(self._worker_tasks)
+        count = min(self.spawn_batch, max(0, free), len(self.board.open_intents()))
+        for _ in range(count):
+            wid = self._next_worker_id()
+            self._worker_tasks[wid] = asyncio.create_task(self._run_worker(wid))
+        return count
+
     async def _watch_gate(self) -> None:
         """按预期 flag 数收口（0.2s 轮询；finally 里统一取消兜底）：
         第 k 面过闸且 k < expected → 不杀任何 worker，发"继续"通告；
@@ -1035,13 +1071,22 @@ class Coordinator:
                 for wid, task in list(workers.items()):
                     if task.done():
                         workers.pop(wid)
-                # 黑板有变化且过冷却 → 规划
+                # 黑板变化或并发槽长期缺货，且过冷却 → 规划。后者保证 planner
+                # 返回合法空计划后仍会周期补位，不会让 /workers 5 永久只跑 1 个。
                 version = self.board.version()
-                if version != last_version:
+                running = sum(not task.done() for task in workers.values())
+                queued = len(self.board.open_intents())
+                refill_needed = running + queued < self.desired_workers
+                if version != last_version or refill_needed:
                     if time.monotonic() - last_plan >= self.planner_cooldown:
                         last_version = version
                         try:
                             await self._plan_once()
+                            # planner 一产出任务就先开 worker。spectator 模型可能慢，
+                            # 不应把首个 worker 的启动再阻塞几十秒。
+                            spawned = self._fill_worker_slots()
+                            if spawned:
+                                await asyncio.sleep(0)
                             spectator_summary = await self._spectator_once()
                             if spectator_summary:
                                 self._last_plan_summary = spectator_summary
@@ -1074,11 +1119,7 @@ class Coordinator:
                                 f"{self.planner_cooldown:g}s 后重新规划"
                             )))
                 # 平滑扩容（放宽版）：空槽且有货，每拍最多补 spawn_batch 个，尽快填满
-                free = self.desired_workers - len(workers)
-                if free > 0:
-                    for _ in range(min(self.spawn_batch, free, len(self.board.open_intents()))):
-                        wid = self._next_worker_id()
-                        workers[wid] = asyncio.create_task(self._run_worker(wid))
+                self._fill_worker_slots()
                 await asyncio.sleep(self.tick)
         finally:
             if self.gate.solved and not solved_watcher.done():
