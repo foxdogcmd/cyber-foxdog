@@ -52,6 +52,15 @@ def test_paste_dedup_single_char_double():
     assert dd.should_drop_key("a", now=10.10) is False  # 只吞一个
 
 
+def test_paste_dedup_ignores_non_character_keys():
+    """Ctrl+V 等无文本按键不能清掉后续重放字符的去重状态。"""
+    dd = _PasteDedup(window=0.30)
+    dd.note_paste("ab", now=12.0)
+    assert dd.should_drop_key(None, now=12.01) is False
+    assert dd.should_drop_key("a", now=12.02) is True
+    assert dd.should_drop_key("b", now=12.03) is True
+
+
 def test_paste_dedup_normalizes_replayed_enter():
     """多行粘贴的重复 Enter 不能穿透为提交，CR/LF 应视为同一个换行。"""
     dd = _PasteDedup(window=0.30)

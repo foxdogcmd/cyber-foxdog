@@ -261,31 +261,39 @@ class CommandInput(TextArea):
     # ------------------------------------------------------------ 长粘贴折叠
     async def _on_paste(self, event: events.Paste) -> None:
         text = event.text or ""
-        if text and self._is_duplicate_paste(text):
-            event.stop()
-            event.prevent_default()
-            return
         if text:
-            self._paste_replay.note_paste(text, time.monotonic())
-        if text and len(text) > self.PASTE_FOLD_THRESHOLD:
+            self._paste_text(text, source="terminal")
+        event.stop()
+        event.prevent_default()
+
+    def action_paste(self) -> None:
+        """Paste from Textual's local clipboard without double-inserting."""
+        self._paste_text(getattr(self.app, "clipboard", "") or "", source="clipboard")
+
+    def _paste_text(self, text: str, *, source: str) -> None:
+        if not text or self.read_only:
+            return
+        now = time.monotonic()
+        if self._is_duplicate_paste(text, source=source, now=now):
+            return
+        self._paste_replay.note_paste(text, now)
+        if len(text) > self.PASTE_FOLD_THRESHOLD:
             self._paste_seq += 1
             self._pastes[self._paste_seq] = text
-            token = f"[粘贴的文本#{self._paste_seq}]"
-            if result := self._replace_via_keyboard(token, *self.selection):
-                self.move_cursor(result.end_location)
-                self.focus()
-            event.stop()
-            event.prevent_default()
-            return
-        await super()._on_paste(event)
+            text = f"[粘贴的文本#{self._paste_seq}]"
+        if result := self._replace_via_keyboard(text, *self.selection):
+            self.move_cursor(result.end_location)
+            self.focus()
 
-    def _is_duplicate_paste(self, text: str) -> bool:
-        """Suppress duplicate paste events emitted by some terminal frontends."""
+    def _is_duplicate_paste(self, text: str, *, source: str, now: float) -> bool:
+        """Suppress duplicate paste paths emitted for the same physical paste."""
         sig = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()
-        now = time.monotonic()
         last = self._last_paste_sig
-        self._last_paste_sig = (sig, now)
-        return bool(last and last[0] == sig and now - last[1] <= _SUBMIT_DUPLICATE_WINDOW)
+        self._last_paste_sig = (sig, now, source)
+        if not last or last[0] != sig or now - last[1] > _SUBMIT_DUPLICATE_WINDOW:
+            return False
+        last_source = last[2] if len(last) > 2 else "terminal"
+        return source == "terminal" or last_source == "terminal"
 
     def expand_pastes(self, text: str) -> str:
         """提交前把占位符还原成真实粘贴内容；孤儿占位符（已被删改）保留原文。"""
@@ -404,14 +412,20 @@ class CommandInput(TextArea):
 
     async def _on_key(self, event) -> None:
         app = self.app
-        if self._paste_replay.should_drop_key(
-            _paste_key_character(event), time.monotonic()
+        is_clipboard_paste_key = getattr(event, "key", "") in {"ctrl+v", "super+v"}
+        if (
+            not is_clipboard_paste_key
+            and self._paste_replay.should_drop_key(
+                _paste_key_character(event), time.monotonic()
+            )
         ):
             event.prevent_default()
             event.stop()
             return
-        # Any real key breaks the duplicate Paste event window.
-        self._last_paste_sig = None
+        # Any real key, except the local clipboard paste binding itself, breaks
+        # the duplicate Paste event window.
+        if not is_clipboard_paste_key:
+            self._last_paste_sig = None
         if isinstance(app, ChatApp) and app._resume_picker_active:
             if event.key == "escape":
                 app._hide_resume_picker(cancelled=True)

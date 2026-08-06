@@ -162,6 +162,58 @@ async def test_duplicate_paste_event_is_suppressed(tmp_path, monkeypatch):
         await pilot.pause(0.3)
 
 
+async def test_ctrl_v_action_after_paste_event_is_suppressed(tmp_path, monkeypatch):
+    """Ctrl+V may dispatch both a terminal Paste event and TextArea.action_paste."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        inp = app.query_one(CommandInput)
+        app.copy_to_clipboard("abc\n")
+        await inp._on_paste(events.Paste("abc\n"))
+        await inp._on_key(events.Key("ctrl+v", None))
+        inp.action_paste()
+        await pilot.pause(0.2)
+        assert inp.value == "abc\n"
+        inp.action_undo()
+        assert inp.value == ""
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
+async def test_paste_event_after_ctrl_v_action_is_suppressed(tmp_path, monkeypatch):
+    """The duplicate guard works even if the local clipboard action wins the race."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        inp = app.query_one(CommandInput)
+        app.copy_to_clipboard("abc\n")
+        inp.action_paste()
+        await inp._on_paste(events.Paste("abc\n"))
+        await pilot.pause(0.2)
+        assert inp.value == "abc\n"
+        inp.action_undo()
+        assert inp.value == ""
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
+async def test_long_paste_ctrl_v_duplicate_keeps_single_token(tmp_path, monkeypatch):
+    """Long paste folding must not allocate a second token through action_paste."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        inp = app.query_one(CommandInput)
+        payload = "证明 " + "x" * 300
+        app.copy_to_clipboard(payload)
+        await inp._on_paste(events.Paste(payload))
+        inp.action_paste()
+        await pilot.pause(0.2)
+        assert inp.value == "[粘贴的文本#1]"
+        assert inp._pastes == {1: payload}
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
 async def test_paste_replayed_keys_are_suppressed(tmp_path, monkeypatch):
     """Paste 后终端重放逐字符 Key（含 CR/LF）时，不应再次插入或触发提交。"""
     app = _app(tmp_path, monkeypatch)

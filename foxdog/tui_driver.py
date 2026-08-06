@@ -76,6 +76,8 @@ class _PasteDedup:
             self._pending = ""
             self._skip_optional_lf = False
             return False
+        if character is None:
+            return False
         if self._skip_optional_lf:
             self._skip_optional_lf = False
             if character == "\n":
