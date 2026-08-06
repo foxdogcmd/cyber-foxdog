@@ -166,7 +166,8 @@ _CTRL_C_EXIT_WINDOW = 2.0
 _CTRL_C_DUPLICATE_WINDOW = 0.08
 _SUBMIT_DUPLICATE_WINDOW = 0.35
 _PASTE_REPLAY_WINDOW = 0.75
-_EVENT_PUMP_LIMIT = 256
+_EVENT_PUMP_LIMIT = 128
+_EVENT_PUMP_YIELD_EVERY = 32
 
 
 @dataclass
@@ -706,6 +707,7 @@ class ChatApp(App):
         # 时间线状态
         self._stream_widgets: dict[tuple[str | None, str], AgentStreamBlock] = {}
         self._stream_raw: dict[tuple[str | None, str], str] = {}
+        self._stream_parts: dict[tuple[str | None, str], list[str]] = {}
         self._pending_stream_updates: set[tuple[str | None, str]] = set()
         self._reasoning_blocks: dict[tuple[str | None, str], ReasoningBlock] = {}
         self._rows: dict[str, ToolCallRow] = {}  # call_id → 工具调用行
@@ -805,7 +807,7 @@ class ChatApp(App):
 
     async def on_mount(self) -> None:
         self.set_interval(0.5, self._tick_half_second)
-        self._activity_timer = self.set_interval(0.1, self._tick_activity_animation, pause=True)
+        self._activity_timer = self.set_interval(0.2, self._tick_activity_animation, pause=True)
         self._refresh_terminal_title(force=True)
         self.query_one("#timeline", VerticalScroll).anchor()  # 新内容自动锚底，上翻自动脱锚
         # 视口窗口化：卸载视口外旧 widget 换占位符，滚回重建（修滚动卡顿）
@@ -1043,6 +1045,11 @@ class ChatApp(App):
                 self.query_one(CommandInput).focus()  # 任务结束后落焦输入框
                 continue
             await self._render_event(item)
+            # The queue is fed by worker/model tasks. Yield regularly so a burst
+            # of token events cannot monopolize the Textual event loop and make
+            # pointer scrolling feel stuck.
+            if processed % _EVENT_PUMP_YIELD_EVERY == 0:
+                await asyncio.sleep(0)
         self._commit_stream_updates()
 
     async def _write(self, text: Text) -> None:
@@ -1219,7 +1226,9 @@ class ChatApp(App):
                 and self._last_agent_key is not None
             ):
                 key = self._last_agent_key
-            self._stream_raw[key] = self._stream_raw.get(key, "") + delta
+            # Materialize once per pump in _commit_stream_update. Repeated
+            # ``old + delta`` makes long streamed messages quadratic.
+            self._stream_parts.setdefault(key, []).append(delta)
             widget = self._stream_widgets.get(key)
             if widget is None:
                 # 流式中块创建：pinned=True 防止窗口化折叠流式中的块。
@@ -1427,6 +1436,7 @@ class ChatApp(App):
             self._commit_stream_updates()
             self._stream_widgets.clear()
             self._stream_raw.clear()
+            self._stream_parts.clear()
             self._pending_stream_updates.clear()
             self._last_agent_widget = None
             self._last_agent_key = None
@@ -1435,10 +1445,14 @@ class ChatApp(App):
         self._commit_stream_update(key)
         self._stream_widgets.pop(key, None)
         self._stream_raw.pop(key, None)
+        self._stream_parts.pop(key, None)
         self._pending_stream_updates.discard(key)
 
     def _commit_stream_update(self, key: tuple[str | None, str]) -> None:
         widget = self._stream_widgets.get(key)
+        parts = self._stream_parts.pop(key, None)
+        if parts:
+            self._stream_raw[key] = self._stream_raw.get(key, "") + "".join(parts)
         raw = self._stream_raw.get(key)
         if widget is not None and raw is not None and key in self._pending_stream_updates:
             widget.set_body(raw)
@@ -1484,7 +1498,10 @@ class ChatApp(App):
             w.update("Jump to bottom (ctrl+End) ↓", layout=False)
             return
         try:
-            tl.anchor()
+            # Avoid forcing an immediate scroll/layout on every 200ms spinner
+            # tick. Re-anchor only after the user has actually returned to end.
+            if not getattr(tl, "_anchored", False) or getattr(tl, "_anchor_released", False):
+                tl.anchor()
         except Exception:
             pass
         w.set_class(False, "jump")

@@ -372,6 +372,44 @@ async def test_stream_deltas_commit_once_per_event_pump(tmp_path, monkeypatch):
         await pilot.pause(0.3)
 
 
+async def test_wheel_anchor_checks_are_coalesced(tmp_path, monkeypatch):
+    """A wheel burst should queue one follow-anchor check, not one per event."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        timeline = app.query_one("#timeline")
+        scheduled = []
+        monkeypatch.setattr(
+            timeline,
+            "call_after_refresh",
+            lambda *args, **kwargs: scheduled.append((args, kwargs)),
+        )
+        timeline._schedule_anchor_check()
+        timeline._schedule_anchor_check()
+        timeline._schedule_anchor_check()
+        assert len(scheduled) == 1
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
+async def test_reasoning_token_appends_are_buffered(tmp_path, monkeypatch):
+    """Long reasoning streams avoid quadratic string concatenation per token."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        block = ReasoningBlock("req-buffer", None)
+        await app.query_one("#timeline").mount(block)
+        for _ in range(1000):
+            block.append("token ")
+        assert block._buffer == ""
+        assert len(block._buffer_parts) == 1000
+        block._materialize_buffer()
+        assert block._buffer == "token " * 1000
+        assert block._buffer_parts == []
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
 # ------------------------------------------------------------ 竖线光标注入
 async def test_cursor_bar_is_software_glyph(tmp_path, monkeypatch):
     """竖线光标根因修法：Input 软件光标位置渲染 ▏（非硬件 DECSCUSR，反色已去）。"""

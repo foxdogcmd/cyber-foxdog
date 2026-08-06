@@ -127,6 +127,7 @@ class ReasoningBlock(Vertical):
         self.request_id = request_id
         self.worker = worker
         self._buffer = ""
+        self._buffer_parts: list[str] = []
         self._footer = ""
         self._refresh_scheduled = False
         # rewrap 缓存：同 width 且 buffer/footer 未变时直接复用（resize 扇出 N 块时
@@ -150,12 +151,19 @@ class ReasoningBlock(Vertical):
     def append(self, delta: str) -> None:
         if not delta:
             return
-        self._buffer += delta
+        # Keep token appends linear; repeated ``self._buffer += delta`` becomes
+        # quadratic for long reasoning streams before the tail window is shown.
+        self._buffer_parts.append(delta)
+        self._schedule_refresh()
+
+    def _materialize_buffer(self) -> None:
+        if self._buffer_parts:
+            self._buffer += "".join(self._buffer_parts)
+            self._buffer_parts.clear()
         if len(self._buffer) > REASONING_BUFFER_CHARS:
             tail = self._buffer[-REASONING_BUFFER_CHARS:]
             newline = tail.find("\n")
             self._buffer = "…\n" + (tail[newline + 1 :] if newline >= 0 else tail)
-        self._schedule_refresh()
 
     def finish(self, duration_ms: int, completion_tokens: int | None, *, ok: bool = True) -> None:
         seconds = duration_ms / 1000
@@ -191,6 +199,7 @@ class ReasoningBlock(Vertical):
 
     def _refresh_content(self) -> None:
         self._refresh_scheduled = False
+        self._materialize_buffer()
         width = max(20, self.content_size.width or self.size.width or 80)
         fp = self._buffer_fingerprint()
         ffp = self._footer_fingerprint()
@@ -220,6 +229,7 @@ class ReasoningBlock(Vertical):
 
     def snapshot(self) -> dict:
         """窗口化重建用的状态快照（buffer + footer 终态）。"""
+        self._materialize_buffer()
         return {"buffer": self._buffer, "footer": self._footer, "expanded": self.has_class("expanded")}
 
     @classmethod

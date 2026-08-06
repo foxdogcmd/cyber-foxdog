@@ -29,10 +29,10 @@ from textual import events
 from textual.widgets import Static
 
 # 计数兜底：最多保留这么多已挂载条目（防超长任务把树撑大）。
-# 每条是独立 widget，Textual layout 成本 ∝ 挂载 widget 数；限到 ~150 条足够平滑滚动。
-_MAX_MOUNTED = 150
+# 每条是独立 widget，Textual layout 成本 ∝ 挂载 widget 数；滚动视口不需要保留整场历史。
+_MAX_MOUNTED = 96
 # 每次裁剪把挂载数降到 _MAX_MOUNTED - _TRIM_BATCH，避免每 append 都触发裁剪（迟滞）。
-_TRIM_BATCH = 40
+_TRIM_BATCH = 24
 # 历史快照 Static 里保留的最大字符数（防超长任务把单个 Static 撑爆）；超出丢最旧。
 _HISTORY_MAX_CHARS = 60_000
 _HISTORY_HEAD = "  …（以下为已折叠的历史记录，仅文本；新内容在下方）\n"
@@ -41,10 +41,25 @@ _HISTORY_HEAD = "  …（以下为已折叠的历史记录，仅文本；新内�
 class TimelineScroll(VerticalScroll):
     """#timeline 容器：滚轮手势释放 follow anchor（否则锚底会把每次上翻弹回）。"""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._anchor_check_scheduled = False
+
+    def _schedule_anchor_check(self) -> None:
+        """Coalesce a burst of wheel events into one post-layout anchor check."""
+        if self._anchor_check_scheduled:
+            return
+        self._anchor_check_scheduled = True
+        self.call_after_refresh(self._anchor_if_at_end)
+
     def _anchor_if_at_end(self) -> None:
+        self._anchor_check_scheduled = False
         try:
             if self.max_scroll_y <= 0 or self.is_vertical_scroll_end:
-                self.anchor()
+                # anchor() calls scroll_end(immediate=True). Avoid doing that on
+                # every activity tick when the timeline is already anchored.
+                if not getattr(self, "_anchored", False) or getattr(self, "_anchor_released", False):
+                    self.anchor()
         except Exception:
             pass
 
@@ -60,7 +75,7 @@ class TimelineScroll(VerticalScroll):
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         self.release_anchor()
         super()._on_mouse_scroll_down(event)
-        self.call_after_refresh(self._anchor_if_at_end)
+        self._schedule_anchor_check()
 
 
 @dataclass
