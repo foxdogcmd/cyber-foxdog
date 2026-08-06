@@ -64,6 +64,8 @@ _SPECTATOR_MERGE_RE = re.compile(
 _WORKER_RESULT_LIMIT = 8000
 _WORKER_NOTE_LIMIT = 140
 _SPECTATOR_HANDOFF_GRACE = 15.0
+_PLANNER_RETRY_BASE = 30.0
+_PLANNER_RETRY_MAX = 300.0
 
 
 @dataclass
@@ -121,6 +123,9 @@ class Coordinator:
         tick: float = 2.0,
         planner_cooldown: float = 10.0,
         planner_timeout: float = 180.0,
+        planner_retry_base: float = _PLANNER_RETRY_BASE,
+        planner_retry_max: float = _PLANNER_RETRY_MAX,
+        spectator_timeout: float | None = None,
         spectator_cooldown: float = 30.0,
         steer: SteerQueue | None = None,
         interrupt: asyncio.Event | None = None,
@@ -147,6 +152,9 @@ class Coordinator:
         self.tick = tick
         self.planner_cooldown = planner_cooldown
         self.planner_timeout = max(0.1, planner_timeout)
+        self.planner_retry_base = max(0.01, planner_retry_base)
+        self.planner_retry_max = max(self.planner_retry_base, planner_retry_max)
+        self.spectator_timeout = max(0.1, spectator_timeout if spectator_timeout is not None else self.planner_timeout)
         self.spectator_cooldown = spectator_cooldown
         self.steer = steer
         self.interrupt = interrupt or asyncio.Event()  # 用户 Esc 中断（swarm 阶段）
@@ -157,6 +165,7 @@ class Coordinator:
         self.spectator_handoff_grace = max(0.0, spectator_handoff_grace)
         self._last_spectator_version = -1
         self._last_spectator_at = 0.0  # 上次旁观者审查时刻（冷却，避免每次板变动都审）
+        self._spectator_seq = itertools.count(1)
         #: 收口结论（spectator 或 planner 判定 complete 时写入）→ runner 写进 writeup.md
         self.final_summary = ""
         self._race_legacy_collected = False
@@ -167,6 +176,8 @@ class Coordinator:
         self._last_plan_created = 0
         self._last_plan_verdict = "explore"
         self._last_plan_summary = ""
+        self._planner_failures = 0
+        self._planner_retry_at = 0.0
         #: 在跑 worker：wid → (task, intent_id)，copilot get_status/kill_worker 用
         self._worker_tasks: dict[str, asyncio.Task] = {}
         self._worker_intents: dict[str, str] = {}
@@ -205,11 +216,63 @@ class Coordinator:
             f"- {wid}: intent={self._worker_intents.get(wid, '?')} running={not task.done()}"
             for wid, task in self._worker_tasks.items()
         ) or "（无活动 worker）"
-        review = await self.spectator.review(
-            self.objective,
-            self.board.summary(),
-            workers,
-            "\n".join(str(item.get("content", "")) for item in self.history[-8:] if isinstance(item, dict)) or "（无）",
+        request_id = f"spectator:{next(self._spectator_seq)}"
+        started = time.monotonic()
+        self._record(
+            {
+                "type": "event",
+                "kind": "spectator_request_started",
+                "request_id": request_id,
+                "version": self.board.version(),
+            }
+        )
+        try:
+            review = await asyncio.wait_for(
+                self.spectator.review(
+                    self.objective,
+                    self.board.summary(),
+                    workers,
+                    "\n".join(str(item.get("content", "")) for item in self.history[-8:] if isinstance(item, dict)) or "（无）",
+                ),
+                timeout=self.spectator_timeout,
+            )
+        except asyncio.CancelledError:
+            self._record(
+                {
+                    "type": "event",
+                    "kind": "spectator_request_complete",
+                    "request_id": request_id,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                    "ok": False,
+                    "error": "cancelled",
+                }
+            )
+            raise
+        except Exception as exc:
+            error = (
+                f"timeout after {self.spectator_timeout:g}s"
+                if isinstance(exc, TimeoutError)
+                else f"{type(exc).__name__}: {exc or '(no detail)'}"
+            )
+            self._record(
+                {
+                    "type": "event",
+                    "kind": "spectator_request_complete",
+                    "request_id": request_id,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                    "ok": False,
+                    "error": error,
+                }
+            )
+            raise
+        self._record(
+            {
+                "type": "event",
+                "kind": "spectator_request_complete",
+                "request_id": request_id,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "ok": True,
+            }
         )
         if review.summary:
             self.emit(SwarmNote(message=f"spectator：{review.summary}"))
@@ -786,6 +849,16 @@ class Coordinator:
             )
         )
         self.emit(ModelRequestStarted(request_id=request_id, turn=0, step=0, worker="planner"))
+        self._record(
+            {
+                "type": "event",
+                "kind": "planner_request_started",
+                "request_id": request_id,
+                "running": running,
+                "queued": open_count,
+                "needed": needed,
+            }
+        )
 
         def on_delta(text: str) -> None:
             nonlocal content_chars
@@ -808,10 +881,11 @@ class Coordinator:
                 timeout=self.planner_timeout,
             )
         except asyncio.CancelledError:
+            duration_ms = round((time.monotonic() - started) * 1000)
             self.emit(
                 ModelRequestComplete(
                     request_id=request_id,
-                    duration_ms=round((time.monotonic() - started) * 1000),
+                    duration_ms=duration_ms,
                     ok=False,
                     error="cancelled",
                     reasoning_chars=reasoning_chars,
@@ -819,28 +893,70 @@ class Coordinator:
                     worker="planner",
                 )
             )
+            self._record(
+                {
+                    "type": "event",
+                    "kind": "planner_request_complete",
+                    "request_id": request_id,
+                    "duration_ms": duration_ms,
+                    "ok": False,
+                    "error": "cancelled",
+                    "reasoning_chars": reasoning_chars,
+                    "content_chars": content_chars,
+                }
+            )
             raise
         except Exception as exc:
+            duration_ms = round((time.monotonic() - started) * 1000)
+            error = (
+                f"timeout after {self.planner_timeout:g}s"
+                if isinstance(exc, TimeoutError)
+                else f"{type(exc).__name__}: {exc or '(no detail)'}"
+            )
             self.emit(
                 ModelRequestComplete(
                     request_id=request_id,
-                    duration_ms=round((time.monotonic() - started) * 1000),
+                    duration_ms=duration_ms,
                     ok=False,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=error,
                     reasoning_chars=reasoning_chars,
                     content_chars=content_chars,
                     worker="planner",
                 )
             )
+            self._record(
+                {
+                    "type": "event",
+                    "kind": "planner_request_complete",
+                    "request_id": request_id,
+                    "duration_ms": duration_ms,
+                    "ok": False,
+                    "error": error,
+                    "reasoning_chars": reasoning_chars,
+                    "content_chars": content_chars,
+                }
+            )
             raise
+        duration_ms = round((time.monotonic() - started) * 1000)
         self.emit(
             ModelRequestComplete(
                 request_id=request_id,
-                duration_ms=round((time.monotonic() - started) * 1000),
+                duration_ms=duration_ms,
                 reasoning_chars=reasoning_chars,
                 content_chars=content_chars,
                 worker="planner",
             )
+        )
+        self._record(
+            {
+                "type": "event",
+                "kind": "planner_request_complete",
+                "request_id": request_id,
+                "duration_ms": duration_ms,
+                "ok": True,
+                "reasoning_chars": reasoning_chars,
+                "content_chars": content_chars,
+            }
         )
         created: list[str] = []
         for spec in result.intents:
@@ -1066,6 +1182,8 @@ class Coordinator:
                 if self._drain_steer():
                     last_version = -1
                     last_plan = 0.0
+                    self._planner_failures = 0
+                    self._planner_retry_at = 0.0
                 workers = self._worker_tasks
                 # 收割完成的 worker
                 for wid, task in list(workers.items()):
@@ -1078,31 +1196,78 @@ class Coordinator:
                 queued = len(self.board.open_intents())
                 refill_needed = running + queued < self.desired_workers
                 if version != last_version or refill_needed:
-                    if time.monotonic() - last_plan >= self.planner_cooldown:
+                    now = time.monotonic()
+                    if now >= self._planner_retry_at and now - last_plan >= self.planner_cooldown:
                         last_version = version
+                        plan_succeeded = False
                         try:
                             await self._plan_once()
+                        except Exception as exc:  # noqa: BLE001 - planner 网络/解析故障不炸主循环
+                            self._planner_failures += 1
+                            retry_delay = min(
+                                self.planner_retry_max,
+                                self.planner_retry_base * (2 ** min(self._planner_failures - 1, 16)),
+                            )
+                            self._planner_retry_at = time.monotonic() + retry_delay
+                            last_version = -1
+                            if isinstance(exc, TimeoutError):
+                                detail = f"请求超过 {self.planner_timeout:g}s"
+                            else:
+                                detail = f"{type(exc).__name__}: {exc or '无详细信息'}"
+                            self.emit(
+                                SwarmNote(
+                                    message=(
+                                        f"planner 异常：{detail}；{retry_delay:g}s 后重试"
+                                        f"（连续失败 {self._planner_failures} 次）"
+                                    )
+                                )
+                            )
+                            self._record(
+                                {
+                                    "type": "event",
+                                    "kind": "planner_retry_scheduled",
+                                    "failures": self._planner_failures,
+                                    "retry_delay": retry_delay,
+                                    "error": detail,
+                                }
+                            )
+                        else:
+                            plan_succeeded = True
+                            self._planner_failures = 0
+                            self._planner_retry_at = 0.0
                             # planner 一产出任务就先开 worker。spectator 模型可能慢，
                             # 不应把首个 worker 的启动再阻塞几十秒。
                             spawned = self._fill_worker_slots()
                             if spawned:
                                 await asyncio.sleep(0)
-                            spectator_summary = await self._spectator_once()
-                            if spectator_summary:
-                                self._last_plan_summary = spectator_summary
-                                self.final_summary = spectator_summary
-                                self.emit(SwarmNote(message="spectator 确认任务完成\n" + spectator_summary))
-                                return EXIT_COMPLETE
-                        except Exception as exc:  # noqa: BLE001 - planner 网络/解析故障不炸主循环
-                            # 实战翻车：DeepSeek 侧 RemoteProtocolError 逃逸导致整个 solve 崩溃
-                            self.emit(SwarmNote(message=f"planner 异常（下一拍重试）: {type(exc).__name__}: {exc}"))
-                            last_version = -1  # 强制下拍重试
+                            try:
+                                spectator_summary = await self._spectator_once()
+                            except Exception as exc:  # noqa: BLE001 - spectator 故障不冒充 planner 故障
+                                detail = (
+                                    f"请求超过 {self.spectator_timeout:g}s"
+                                    if isinstance(exc, TimeoutError)
+                                    else f"{type(exc).__name__}: {exc or '无详细信息'}"
+                                )
+                                self.emit(SwarmNote(message=f"spectator 异常（本轮跳过）: {detail}"))
+                                self._record(
+                                    {
+                                        "type": "event",
+                                        "kind": "spectator_request_failed",
+                                        "error": detail,
+                                    }
+                                )
+                            else:
+                                if spectator_summary:
+                                    self._last_plan_summary = spectator_summary
+                                    self.final_summary = spectator_summary
+                                    self.emit(SwarmNote(message="spectator 确认任务完成\n" + spectator_summary))
+                                    return EXIT_COMPLETE
                         finally:
                             # Cooldown is measured after the request completes. A
                             # multi-minute planner call must not immediately launch
                             # another request when it returns empty.
                             last_plan = time.monotonic()
-                        if (
+                        if plan_succeeded and (
                             self._last_plan_created == 0
                             and not workers
                             and not self.board.open_intents()

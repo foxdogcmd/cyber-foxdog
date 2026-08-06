@@ -629,6 +629,157 @@ async def test_coordinator_replans_while_worker_capacity_is_unfilled(tmp_path):
     board.close()
 
 
+async def test_planner_timeout_is_recorded_and_retried_with_backoff(tmp_path):
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+
+    board = Blackboard(tmp_path / "planner-timeout.db")
+    interrupt = asyncio.Event()
+    events = []
+    records = []
+
+    class TimeoutPlanner:
+        calls = 0
+
+        async def plan(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls >= 2:
+                interrupt.set()
+            raise TimeoutError
+
+    planner = TimeoutPlanner()
+    coord = Coordinator(
+        board=board,
+        planner=planner,
+        factory=SimpleNamespace(budget_state=None),
+        emit=events.append,
+        rollout=SimpleNamespace(write=records.append),
+        gate=SimpleNamespace(solved=False),
+        objective="测试题",
+        budget=Budget(),
+        workers=2,
+        tick=0.005,
+        planner_cooldown=0.005,
+        planner_timeout=0.1,
+        planner_retry_base=0.15,
+        planner_retry_max=0.3,
+        interrupt=interrupt,
+    )
+
+    task = asyncio.create_task(coord.solve())
+    for _ in range(100):
+        if planner.calls:
+            break
+        await asyncio.sleep(0.005)
+    assert planner.calls == 1
+    board.post_fact("退避期间 worker 仍在更新黑板", actor="worker-1")
+    await asyncio.sleep(0.05)
+    assert planner.calls == 1
+    for _ in range(100):
+        if planner.calls >= 2:
+            break
+        await asyncio.sleep(0.01)
+    code = await asyncio.wait_for(task, timeout=1)
+
+    assert code == EXIT_ERROR and planner.calls == 2
+    notes = [getattr(event, "message", "") for event in events]
+    assert any("请求超过 0.1s" in note and "0.15s 后重试" in note for note in notes)
+    assert not any("planner 未派出可执行 intent" in note for note in notes)
+    completed = [record for record in records if record.get("kind") == "planner_request_complete"]
+    assert len(completed) == 2
+    assert all(record["ok"] is False and record["error"] == "timeout after 0.1s" for record in completed)
+    retries = [record for record in records if record.get("kind") == "planner_retry_scheduled"]
+    assert [record["failures"] for record in retries] == [1, 2]
+    assert [record["retry_delay"] for record in retries] == [0.15, 0.3]
+    board.close()
+
+
+async def test_plan_once_rollout_records_success(tmp_path):
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.planner import PlanResult
+
+    board = Blackboard(tmp_path / "planner-rollout.db")
+    records = []
+
+    class EmptyPlanner:
+        async def plan(self, *_args, **_kwargs):
+            return PlanResult()
+
+    coord = Coordinator(
+        board=board,
+        planner=EmptyPlanner(),
+        factory=None,
+        emit=lambda _event: None,
+        rollout=SimpleNamespace(write=records.append),
+        gate=SimpleNamespace(solved=False),
+        objective="测试题",
+        budget=Budget(),
+    )
+    await coord._plan_once()
+
+    request_records = [record for record in records if record.get("kind", "").startswith("planner_request_")]
+    assert [record["kind"] for record in request_records] == [
+        "planner_request_started",
+        "planner_request_complete",
+    ]
+    assert request_records[1]["ok"] is True
+    board.close()
+
+
+async def test_spectator_failure_is_not_reported_as_planner_failure(tmp_path):
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.planner import PlanResult
+
+    board = Blackboard(tmp_path / "spectator-failure.db")
+    interrupt = asyncio.Event()
+    events = []
+    records = []
+
+    class EmptyPlanner:
+        calls = 0
+
+        async def plan(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls >= 2:
+                interrupt.set()
+            return PlanResult()
+
+    class BrokenSpectator:
+        async def review(self, *_args, **_kwargs):
+            raise TimeoutError
+
+    planner = EmptyPlanner()
+    coord = Coordinator(
+        board=board,
+        planner=planner,
+        factory=SimpleNamespace(budget_state=None),
+        emit=events.append,
+        rollout=SimpleNamespace(write=records.append),
+        gate=SimpleNamespace(solved=False),
+        objective="测试题",
+        budget=Budget(),
+        workers=2,
+        tick=0.005,
+        planner_cooldown=0.01,
+        spectator_cooldown=0,
+        spectator=BrokenSpectator(),
+        interrupt=interrupt,
+    )
+    code = await asyncio.wait_for(coord.solve(), timeout=1)
+
+    assert code == EXIT_ERROR and planner.calls >= 2
+    notes = [getattr(event, "message", "") for event in events]
+    assert any("spectator 异常（本轮跳过）" in note for note in notes)
+    assert not any("planner 异常" in note for note in notes)
+    assert any(record.get("kind") == "spectator_request_failed" for record in records)
+    board.close()
+
+
 async def test_coordinator_rejects_placeholder_target(tmp_path):
     """planner 派的 intent 含占位主机名（http://target/...）必须被 coordinator 拒收。
 

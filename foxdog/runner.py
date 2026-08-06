@@ -449,11 +449,22 @@ async def build_run(
             engine_labels[f"engine-{_name}"] = _ep.model or _ep.provider or _name
     if workers > 1:
         # swarm 模式：race 快路径 + OODA 协调循环（预算整体共享）
-        planner_provider = build_role_provider(cfg.planner_endpoints, cfg.planner) if cfg.planner_endpoints else (build_endpoint_provider(cfg.planner) if cfg.planner is not None else provider)
+        def new_planning_provider():
+            if cfg.planner_endpoints:
+                return build_role_provider(cfg.planner_endpoints, cfg.planner)
+            return build_endpoint_provider(cfg.planner or cfg.solver)
+
+        # 即使 planner 回落到 solver 端点也使用独立客户端，避免与 worker 共享
+        # failover/retry 可变状态。API 端点仍相同，协调器侧另有超时退避保护。
+        planner_provider = new_planning_provider()
         # 旁观者：统揽全局、审查方向、纠偏、判定收口、完成后其结论写进 writeup。
         # 有专用 [model.spectator] 端点则用之；否则复用 planner 模型（swarm 模式默认启用）。
         from .swarm.spectator import Spectator
-        spectator_provider = build_endpoint_provider(cfg.spectator) if cfg.spectator is not None else planner_provider
+        spectator_provider = (
+            build_endpoint_provider(cfg.spectator)
+            if cfg.spectator is not None
+            else new_planning_provider()
+        )
         spectator = Spectator(spectator_provider)
         coordinator = Coordinator(
             board=ctx.facts,
