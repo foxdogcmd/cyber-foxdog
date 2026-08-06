@@ -66,6 +66,8 @@ _WORKER_NOTE_LIMIT = 140
 _SPECTATOR_HANDOFF_GRACE = 15.0
 _PLANNER_RETRY_BASE = 30.0
 _PLANNER_RETRY_MAX = 300.0
+_PLANNER_TIMEOUT = 300.0
+_SPECTATOR_TIMEOUT = 180.0
 
 
 @dataclass
@@ -122,10 +124,10 @@ class Coordinator:
         race_minutes: float = 3.0,
         tick: float = 2.0,
         planner_cooldown: float = 10.0,
-        planner_timeout: float = 180.0,
+        planner_timeout: float = _PLANNER_TIMEOUT,
         planner_retry_base: float = _PLANNER_RETRY_BASE,
         planner_retry_max: float = _PLANNER_RETRY_MAX,
-        spectator_timeout: float | None = None,
+        spectator_timeout: float = _SPECTATOR_TIMEOUT,
         spectator_cooldown: float = 30.0,
         steer: SteerQueue | None = None,
         interrupt: asyncio.Event | None = None,
@@ -154,7 +156,7 @@ class Coordinator:
         self.planner_timeout = max(0.1, planner_timeout)
         self.planner_retry_base = max(0.01, planner_retry_base)
         self.planner_retry_max = max(self.planner_retry_base, planner_retry_max)
-        self.spectator_timeout = max(0.1, spectator_timeout if spectator_timeout is not None else self.planner_timeout)
+        self.spectator_timeout = max(0.1, spectator_timeout)
         self.spectator_cooldown = spectator_cooldown
         self.steer = steer
         self.interrupt = interrupt or asyncio.Event()  # 用户 Esc 中断（swarm 阶段）
