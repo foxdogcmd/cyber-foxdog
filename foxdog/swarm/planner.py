@@ -52,8 +52,10 @@ PLANNER_INSTRUCTION = """\
 8. audit 里列出你不信任的 fact id（编号），没有就空数组。
 
 9. verdict：explore=继续派活；course_correct=方向漂移需要纠偏；complete=确认收工。
-   complete 只在目标已完成，或所有合理方向都有证据排除时使用；此时 intents 必须为空，
-   summary 必须给操作员一段简洁结论（发现、证据、未达成项和建议）。
+   complete 只在目标已完成、且 FlagGate 已经过闸时使用；若只是排除了若干方向、
+   但还没有真实 flag / solved 证据，则仍然输出 explore 或 course_correct。
+   complete 时 intents 必须为空，summary 必须给操作员一段简洁结论（发现、证据、未达成项和建议）。
+10. 靶机是可重启的消耗品，允许激进尝试。在做 渗透测试/web 相关任务时，注意深入分析漏洞点，尝试多种策略，多利用资料和工具。不要限制worker的操作范围(比如禁止webshell写入)
 
 只输出 JSON（不要任何多余文字）：
 {"verdict": "explore|complete|course_correct",

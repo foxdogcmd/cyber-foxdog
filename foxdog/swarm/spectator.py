@@ -216,7 +216,7 @@ verdict 必须是 "continue"、"correct"、"complete" 三者之一，不要输�
 检测到外部阻塞时：
 {{"verdict":"correct","instruction":"暂停所有远程连接 intent，优先本地验证","summary":"远程服务不可用","confidence":0.9,"close_intents":["I6","I13","I22"],"close_status":"barren","close_reason":"远程服务连续失败，EOF/timeout","cancel_workers":[],"merge_groups":[],"blocked_by_external":"remote:challenge.imxbt.cn:32495"}}
 需要关闭/合并重复 intent 时，把要关闭的 intent id 写进 close_intents；如果是一组重复 intent，merge_groups 每组保留第一个，其余由 coordinator 关闭。只关闭有明确证据覆盖或明显重复的 intent。
-complete 只在任务已完成或所有合理方向均有证据排除时使用；不要因为暂时没有新事件就 complete。"""
+complete 只在任务已完成且 FlagGate 已过闸时使用；未拿到真实 flag 时，即使多个方向被排除，也应输出 continue/correct 并指出下一步要换的方向，不要因为暂时没有新事件就 complete。"""
 
     async def review(
         self,

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.budget import Budget, BudgetExceeded, BudgetState
-from ..core.goal import EXIT_BUDGET, EXIT_COMPLETE, EXIT_ERROR, EXIT_SOLVED, GoalMode
+from ..core.goal import EXIT_BUDGET, EXIT_ERROR, EXIT_SOLVED, GoalMode
 from ..core.steer import SteerQueue
 from ..gate.flag_gate import FlagGate
 from ..llm.messages import assistant_to_openai, system_message, user_message
@@ -46,7 +46,9 @@ WORKER_SYSTEM = """\
 8. **收尾必须记录发现**：完成 intent 前，先把本轮所有重要发现（端口/服务/漏洞/凭证/路径）
    用 post_fact 上板——没上板的发现等于没发现，后续 worker 和 planner 看不到。
    即使是 barren（方向走不通），也要 post_deadend 记录排除原因。
-9. 你有 worker 私有 cwd：shell_exec、python_eval、shell_session、read_file/write_file/edit_file
+9. **突破先上板**：一旦看到文件读取/RCE/命令执行/凭证/会话/flag 候选/关键配置泄露等
+   可推进突破的真实输出，下一步必须先 post_fact 记录，再继续扩大利用；不要等整条链打完才上板。
+10. 你有 worker 私有 cwd：shell_exec、python_eval、shell_session、read_file/write_file/edit_file
    的相对路径默认落在你的 scratch 目录，避免和其他 worker 抢同名临时文件。
    Docker runtime 下 TMPDIR/TMP/TEMP 也指向私有 scratch 的 .tmp；临时文件用 $TMPDIR，
    不要硬编码 /tmp/foo 这种全队共享路径。需要共享文件时显式写入 run 公共 work 区或 inputs 区；
@@ -190,11 +192,41 @@ class Coordinator:
         self._last_plan_summary = ""
         self._planner_failures = 0
         self._planner_retry_at = 0.0
+        self._ignored_complete_count = 0
         #: 在跑 worker：wid → (task, intent_id)，copilot get_status/kill_worker 用
         self._worker_tasks: dict[str, asyncio.Task] = {}
         self._worker_intents: dict[str, str] = {}
         self._worker_runs: dict[str, _WorkerRunState] = {}
         self._worker_handoffs: dict[str, _WorkerHandoff] = {}
+
+    def _solved(self) -> bool:
+        return bool(getattr(self.gate, "solved", False))
+
+    def _ignore_unsolved_complete(self, source: str, summary: str) -> None:
+        """Do not let model-level complete stop a CTF run before FlagGate passes."""
+        self._ignored_complete_count += 1
+        clean = " ".join(str(summary or "无 summary").split())
+        note = (
+            f"{source} 建议收口，但 FlagGate 未过闸，已忽略并继续探索"
+            f"（第 {self._ignored_complete_count} 次）：{_compact_worker_note(clean, 180)}"
+        )
+        self.emit(SwarmNote(message=note))
+        self._record(
+            {
+                "type": "event",
+                "kind": "unsolved_complete_ignored",
+                "source": source,
+                "count": self._ignored_complete_count,
+                "summary": clean[:1000],
+            }
+        )
+        if self._ignored_complete_count <= 3:
+            self.board.post_directive(
+                f"{source} 建议收口但 FlagGate 未过闸，禁止结束本题；继续寻找新证据、"
+                f"推进已发现突破线或换独立方向。原收口理由：{clean[:800]}",
+                actor=source,
+                priority="high",
+            )
 
     def set_worker_limit(self, workers: int) -> int:
         """动态调整并发上限；降低时不主动终止已有 worker。"""
@@ -359,7 +391,11 @@ class Coordinator:
                 self._last_plan_created = 0
             self.emit(SwarmNote(message=f"spectator 纠偏：{review.instruction}"))
         elif review.verdict == "complete":
-            return review.summary or "旁观者确认任务完成"
+            summary = review.summary or "旁观者确认任务完成"
+            if self._solved():
+                return summary
+            self._ignore_unsolved_complete("spectator", summary)
+            return None
         return None
 
     def _refs_from_text_close_clauses(self, text: str) -> list[str]:
@@ -1331,10 +1367,12 @@ class Coordinator:
                                 )
                             else:
                                 if spectator_summary:
-                                    self._last_plan_summary = spectator_summary
-                                    self.final_summary = spectator_summary
-                                    self.emit(SwarmNote(message="spectator 确认任务完成\n" + spectator_summary))
-                                    return EXIT_COMPLETE
+                                    if self._solved():
+                                        self._last_plan_summary = spectator_summary
+                                        self.final_summary = spectator_summary
+                                        self.emit(SwarmNote(message="spectator 确认任务完成，FlagGate 已过闸\n" + spectator_summary))
+                                        return EXIT_SOLVED
+                                    self._ignore_unsolved_complete("spectator", spectator_summary)
                         finally:
                             # Cooldown is measured after the request completes. A
                             # multi-minute planner call must not immediately launch
@@ -1348,9 +1386,13 @@ class Coordinator:
                         ):
                             if self._last_plan_verdict == "complete":
                                 summary = self._last_plan_summary or self.board.summary()
-                                self.final_summary = summary
-                                self.emit(SwarmNote(message="planner 确认调查完成\n" + summary))
-                                return EXIT_COMPLETE
+                                if self._solved():
+                                    self.final_summary = summary
+                                    self.emit(SwarmNote(message="planner 确认调查完成，FlagGate 已过闸\n" + summary))
+                                    return EXIT_SOLVED
+                                self._ignore_unsolved_complete("planner", summary)
+                                last_version = -1
+                                continue
                             last_version = -1
                             self.emit(SwarmNote(message=(
                                 f"planner 未派出可执行 intent（verdict={self._last_plan_verdict}），"

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from foxdog.core.goal import EXIT_BUDGET, EXIT_COMPLETE, EXIT_ERROR
+from foxdog.core.goal import EXIT_BUDGET, EXIT_ERROR
 from foxdog.llm.client import FakeProvider
 from foxdog.swarm.planner import ReasonPlanner, parse_plan
 from foxdog.swarm.spectator import Spectator, parse_review
@@ -95,19 +95,22 @@ def test_spectator_prompt_uses_real_verdict_examples():
     assert '"verdict":"correct"' in prompt
 
 
-async def test_planner_complete_exits_once_without_retry_loop(tmp_path):
+async def test_planner_complete_without_flag_is_ignored_and_replanned(tmp_path):
     from foxdog.core.budget import Budget
     from foxdog.swarm.blackboard import Blackboard
     from foxdog.swarm.coordinator import Coordinator
     from foxdog.swarm.planner import PlanResult
 
     board = Blackboard(tmp_path / "complete.db")
+    interrupt = asyncio.Event()
 
     class CompletePlanner:
         calls = 0
 
         async def plan(self, *_args, **_kwargs):
             self.calls += 1
+            if self.calls >= 2:
+                interrupt.set()
             return PlanResult(verdict="complete", summary="已取得账号，但 RCE 路径均有证据排除")
 
     planner = CompletePlanner()
@@ -123,27 +126,24 @@ async def test_planner_complete_exits_once_without_retry_loop(tmp_path):
         budget=Budget(),
         tick=0.005,
         planner_cooldown=0.01,
+        interrupt=interrupt,
     )
     code = await asyncio.wait_for(coord.solve(), timeout=1)
-    assert code == EXIT_COMPLETE
-    assert planner.calls == 1
-    assert any("RCE 路径" in getattr(event, "message", "") for event in events)
+    assert code == EXIT_ERROR
+    assert planner.calls >= 2
+    assert any("FlagGate 未过闸" in getattr(event, "message", "") for event in events)
+    assert any("禁止结束本题" in d["content"] for d in board.directives())
     board.close()
 
 
-async def test_spectator_complete_drives_exit_and_final_summary(tmp_path):
-    """旁观者判定 complete → coordinator 收口 EXIT_COMPLETE，final_summary 供 writeup。"""
+async def test_spectator_complete_without_flag_is_ignored(tmp_path):
+    """旁观者判定 complete 但 FlagGate 未过闸 → 只写控制指令，不结束 swarm。"""
     from foxdog.core.budget import Budget
     from foxdog.swarm.blackboard import Blackboard
     from foxdog.swarm.coordinator import Coordinator
-    from foxdog.swarm.planner import PlanResult
     from foxdog.swarm.spectator import SpectatorReview
 
     board = Blackboard(tmp_path / "spectator.db")
-
-    class QuietPlanner:
-        async def plan(self, *_args, **_kwargs):
-            return PlanResult(verdict="explore", intents=[])
 
     class CompleteSpectator:
         calls = 0
@@ -156,7 +156,7 @@ async def test_spectator_complete_drives_exit_and_final_summary(tmp_path):
     events = []
     coord = Coordinator(
         board=board,
-        planner=QuietPlanner(),
+        planner=SimpleNamespace(),
         factory=SimpleNamespace(budget_state=None),
         emit=events.append,
         rollout=None,
@@ -169,11 +169,41 @@ async def test_spectator_complete_drives_exit_and_final_summary(tmp_path):
     )
     # 灌一条事实 bump board.version()，让 _spectator_once 触发
     board.post_fact("worker 报告：已取得 admin 凭据", actor="worker-1")
-    code = await asyncio.wait_for(coord.solve(), timeout=2)
-    assert code == EXIT_COMPLETE
+    result = await coord._spectator_once()
+    assert result is None
     assert spectator.calls >= 1
-    assert "任务收口" in coord.final_summary
-    assert any("spectator 确认任务完成" in getattr(e, "message", "") for e in events)
+    assert coord.final_summary == ""
+    assert any("FlagGate 未过闸" in getattr(e, "message", "") for e in events)
+    assert any("禁止结束本题" in d["content"] for d in board.directives())
+    board.close()
+
+
+async def test_spectator_complete_after_flag_can_return_summary(tmp_path):
+    from foxdog.core.budget import Budget
+    from foxdog.swarm.blackboard import Blackboard
+    from foxdog.swarm.coordinator import Coordinator
+    from foxdog.swarm.spectator import SpectatorReview
+
+    board = Blackboard(tmp_path / "spectator-solved.db")
+
+    class CompleteSpectator:
+        async def review(self, *_args, **_kwargs):
+            return SpectatorReview(verdict="complete", summary="flag 已提交，任务收口")
+
+    coord = Coordinator(
+        board=board,
+        planner=SimpleNamespace(),
+        factory=SimpleNamespace(budget_state=None),
+        emit=lambda _event: None,
+        rollout=None,
+        gate=SimpleNamespace(solved=True, expected_flags=1, flags=["flag{x}"]),
+        objective="CTF",
+        budget=Budget(),
+        spectator=CompleteSpectator(),
+    )
+    board.post_fact("flag 已提交", actor="worker-1")
+    assert await coord._spectator_once() == "flag 已提交，任务收口"
+    assert board.directives() == []
     board.close()
 
 
