@@ -216,9 +216,10 @@ class LLMClient:
             kwargs["extra_body"] = {"thinking": thinking}
         # K2.7 Code always enables Preserved Thinking and rejects custom
         # thinking modes, so intentionally omit the field for that family.
+        supports_tool_choice = not deepseek or ep.thinking == "disabled"
         if tools:
             kwargs["tools"] = tools
-            if require_tool and kimi_family not in {"k2.6", "k2.7"}:
+            if require_tool and supports_tool_choice and kimi_family not in {"k2.6", "k2.7"}:
                 kwargs["tool_choice"] = "required"
         if ep.max_tokens:
             kwargs["max_tokens"] = ep.max_tokens

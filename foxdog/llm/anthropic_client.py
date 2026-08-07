@@ -294,9 +294,10 @@ class AnthropicClient:
             kwargs["output_config"] = {"effort": ep.reasoning_effort}
         if system:
             kwargs["system"] = system
+        supports_tool_choice = not deepseek or ep.thinking == "disabled"
         if tools:
             kwargs["tools"] = tools_to_anthropic(tools)
-            if require_tool:
+            if require_tool and supports_tool_choice:
                 kwargs["tool_choice"] = {"type": "any"}
         client = self._client(ep)
         async with client.messages.stream(**kwargs) as stream:

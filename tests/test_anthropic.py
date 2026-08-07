@@ -261,7 +261,7 @@ async def test_stream_chat_emits_anthropic_thinking_deltas():
     assert msg.reasoning_content == "先分析再执行"
 
 
-async def test_deepseek_anthropic_uses_agent_output_cap_and_required_tool_choice():
+async def test_deepseek_anthropic_thinking_omits_required_tool_choice():
     recorded: dict = {}
     final = SimpleNamespace(
         content=[SimpleNamespace(type="tool_use", id="t1", name="shell_exec", input={"command": "id"})],
@@ -289,7 +289,7 @@ async def test_deepseek_anthropic_uses_agent_output_cap_and_required_tool_choice
     assert recorded["max_tokens"] == DEEPSEEK_DEFAULT_MAX_TOKENS
     assert recorded["thinking"] == {"type": "enabled"}
     assert recorded["output_config"] == {"effort": "xhigh"}
-    assert recorded["tool_choice"] == {"type": "any"}
+    assert "tool_choice" not in recorded
     assert "temperature" not in recorded
 
 
@@ -318,3 +318,58 @@ async def test_deepseek_anthropic_disabled_thinking_omits_output_config():
     assert recorded["thinking"] == {"type": "disabled"}
     assert recorded["temperature"] == 0.3
     assert "output_config" not in recorded
+
+
+async def test_deepseek_anthropic_disabled_thinking_can_require_tool():
+    recorded: dict = {}
+    final = SimpleNamespace(
+        content=[SimpleNamespace(type="tool_use", id="t1", name="shell_exec", input={"command": "id"})],
+        usage=SimpleNamespace(input_tokens=3, output_tokens=2),
+        stop_reason="tool_use",
+    )
+    endpoint = ModelEndpoint(
+        protocol="anthropic",
+        base_url="https://api.deepseek.com/anthropic",
+        model="deepseek-v4-flash",
+        thinking="disabled",
+        api_key="k",
+    )
+    client = AnthropicClient(
+        endpoint,
+        client_factory=lambda ep: SimpleNamespace(messages=_FakeMessages(final, [], recorded)),
+    )
+    await client.stream_chat(
+        [user_message("继续解题")],
+        [{"type": "function", "function": {"name": "shell_exec", "description": "", "parameters": {"type": "object"}}}],
+        lambda _text: None,
+        require_tool=True,
+    )
+
+    assert recorded["tool_choice"] == {"type": "any"}
+
+
+async def test_deepseek_anthropic_default_thinking_omits_required_tool_choice():
+    recorded: dict = {}
+    final = SimpleNamespace(
+        content=[SimpleNamespace(type="tool_use", id="t1", name="shell_exec", input={"command": "id"})],
+        usage=SimpleNamespace(input_tokens=3, output_tokens=2),
+        stop_reason="tool_use",
+    )
+    endpoint = ModelEndpoint(
+        protocol="anthropic",
+        base_url="https://api.deepseek.com/anthropic",
+        model="deepseek-v4-flash",
+        api_key="k",
+    )
+    client = AnthropicClient(
+        endpoint,
+        client_factory=lambda ep: SimpleNamespace(messages=_FakeMessages(final, [], recorded)),
+    )
+    await client.stream_chat(
+        [user_message("继续解题")],
+        [{"type": "function", "function": {"name": "shell_exec", "description": "", "parameters": {"type": "object"}}}],
+        lambda _text: None,
+        require_tool=True,
+    )
+
+    assert "tool_choice" not in recorded

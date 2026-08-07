@@ -149,7 +149,7 @@ async def test_deepseek_stream_preserves_reasoning_for_tool_followup(monkeypatch
     assert msg.tool_calls[0].name == "shell_exec"
     assert recorded["reasoning_effort"] == "high"
     assert recorded["extra_body"] == {"thinking": {"type": "enabled"}}
-    assert recorded["tool_choice"] == "required"
+    assert "tool_choice" not in recorded
     assert "temperature" not in recorded
     assert "_anthropic_thinking_blocks" not in recorded["messages"][0]
     assert recorded["messages"][0]["reasoning_content"] == "上一轮推理"
@@ -157,6 +157,51 @@ async def test_deepseek_stream_preserves_reasoning_for_tool_followup(monkeypatch
     followup = assistant_to_openai(msg)
     assert followup["reasoning_content"] == "先分析，再执行"
     assert followup["tool_calls"][0]["id"] == "call_1"
+
+
+async def test_deepseek_disabled_thinking_can_require_tool(monkeypatch):
+    recorded = {}
+    chunks = [_chunk(content="ok")]
+    ep = ModelEndpoint(
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        thinking="disabled",
+    )
+    client = LLMClient(ep)
+    stub = SimpleNamespace(chat=SimpleNamespace(completions=_Completions(chunks, recorded)))
+    monkeypatch.setattr(client, "_client", lambda _ep: stub)
+
+    await client._stream_once(
+        ep,
+        [{"role": "user", "content": "检查目标"}],
+        [{"type": "function", "function": {"name": "shell_exec", "parameters": {"type": "object"}}}],
+        lambda _text: None,
+        require_tool=True,
+    )
+
+    assert recorded["tool_choice"] == "required"
+
+
+async def test_deepseek_default_thinking_omits_required_tool_choice(monkeypatch):
+    recorded = {}
+    chunks = [_chunk(content="ok")]
+    ep = ModelEndpoint(
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+    )
+    client = LLMClient(ep)
+    stub = SimpleNamespace(chat=SimpleNamespace(completions=_Completions(chunks, recorded)))
+    monkeypatch.setattr(client, "_client", lambda _ep: stub)
+
+    await client._stream_once(
+        ep,
+        [{"role": "user", "content": "检查目标"}],
+        [{"type": "function", "function": {"name": "shell_exec", "parameters": {"type": "object"}}}],
+        lambda _text: None,
+        require_tool=True,
+    )
+
+    assert "tool_choice" not in recorded
 
 
 async def test_non_deepseek_keeps_temperature_and_strips_reasoning_extension(monkeypatch):
