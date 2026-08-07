@@ -66,6 +66,24 @@ def test_builtin_poc_library_skill_loaded():
     assert "nuclei" in text
 
 
+async def test_builtin_cve_knowledge_loaded(tmp_path):
+    skills = load_skills(is_tool_available=lambda n: True)
+    by_name = {s.name: s for s in skills}
+    assert "cve-knowledge" in by_name
+    root = by_name["cve-knowledge"].resource_root
+    assert (root / "INDEX.md").is_file()
+    assert (root / "sources" / "awesome-poc").is_dir()
+    assert (root / "sources" / "vuln-wiki-poc").is_dir()
+    index = (root / "INDEX.md").read_text(encoding="utf-8")
+    assert "sources/awesome-poc" in index
+    assert "sources/vuln-wiki-poc" in index
+
+    tool = ActivateSkillTool(SkillRegistry(skills))
+    res = await tool.run({"name": "cve-knowledge", "resource": "INDEX.md"}, _ctx(tmp_path))
+    assert res.ok, res.error
+    assert "CVE Knowledge Index" in res.output
+
+
 async def test_activate_skill_reads_bundle_resource(tmp_path):
     skills = load_skills(is_tool_available=lambda n: True)
     tool = ActivateSkillTool(SkillRegistry(skills))
