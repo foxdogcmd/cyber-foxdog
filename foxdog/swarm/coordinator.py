@@ -28,6 +28,7 @@ from .blackboard import Blackboard
 from .planner import ReasonPlanner
 from .worker import WorkerFactory
 from .spectator import Spectator, SpectatorReview
+from .health_monitor import ServiceHealthMonitor
 
 WORKER_SYSTEM = """\
 你是 CTF 解题 swarm 的 worker，与其他 worker 共享黑板和 FlagGate。
@@ -135,6 +136,7 @@ class Coordinator:
         race_engines: list[tuple[str, Any, Any]] | None = None,
         spectator: Spectator | None = None,
         spectator_handoff_grace: float = _SPECTATOR_HANDOFF_GRACE,
+        health_monitor: ServiceHealthMonitor | None = None,
     ) -> None:
         self.board = board
         self.planner = planner
@@ -168,6 +170,14 @@ class Coordinator:
         self._last_spectator_version = -1
         self._last_spectator_at = 0.0  # 上次旁观者审查时刻（冷却，避免每次板变动都审）
         self._spectator_seq = itertools.count(1)
+
+        # 健康监控器（远程服务依赖追踪）
+        self.health_monitor = health_monitor or ServiceHealthMonitor(target=target)
+        self._health_escalation_shown = False
+        self._last_health_check = 0.0
+        self._health_check_interval = 60.0  # 正常情况每分钟检查
+        self._blocked_external_seen: set[str] = set()
+
         #: 收口结论（spectator 或 planner 判定 complete 时写入）→ runner 写进 writeup.md
         self.final_summary = ""
         self._race_legacy_collected = False
@@ -198,6 +208,61 @@ class Coordinator:
     def active_workers(self) -> list[tuple[str, str]]:
         """(worker_id, intent_id) 列表（copilot get_status 用）。"""
         return sorted(self._worker_intents.items())
+
+    async def _check_service_health(self) -> None:
+        """检查远程服务健康状态，必要时发出告警并调整策略"""
+        now = time.monotonic()
+        if now - self._last_health_check < self._health_check_interval:
+            return
+
+        self._last_health_check = now
+        assessment = self.health_monitor.assess_health()
+
+        # 状态降级或严重：发出警告
+        if assessment.status in ("critical", "dead") and not self._health_escalation_shown:
+            self._health_escalation_shown = True
+            label = "严重" if assessment.status == "dead" else "告警"
+            msg = f"远程服务{label}（{assessment.status}）：{assessment.diagnosis}\n\n"
+            if assessment.recommendation:
+                msg += f"{assessment.recommendation}\n\n"
+            msg += "已自动降低探测频率，按 Ctrl+C 中断或继续等待"
+
+            self.emit(SwarmNote(message=msg))
+
+            # 写入黑板指令，让后续 planner 和 worker 看到
+            self.board.post_directive(
+                f"[健康监控] 远程服务 {assessment.status}：{assessment.diagnosis}。"
+                f"建议暂停所有远程连接操作，优先进行本地验证。",
+                actor="health_monitor",
+                priority="high",
+            )
+
+            # 自动降低探测频率：从每分钟到每5分钟
+            self._health_check_interval = 300.0
+
+        # dead 状态超过10分钟：建议完全停止远程工作
+        if assessment.status == "dead" and self.health_monitor.first_failure:
+            time_dead = now - self.health_monitor.first_failure
+            if time_dead > 600 and len(self._worker_tasks) > 0:
+                # 记录但不强制中断（用户可能手动介入了）
+                self.emit(SwarmNote(
+                    message=f"远程服务已失联 {time_dead/60:.0f} 分钟，建议检查平台状态或切换目标"
+                ))
+
+    def _handle_external_block(self, blocked_by_external: str | None) -> bool:
+        blocked = " ".join(str(blocked_by_external or "").split())
+        if not blocked or blocked in self._blocked_external_seen:
+            return False
+        self._blocked_external_seen.add(blocked)
+        self.board.post_directive(
+            f"外部依赖阻塞：{blocked}。暂停相关远程连接 intent，"
+            "优先做本地复现、exploit 稳定性验证、证据整理或等待服务恢复。",
+            actor="spectator",
+            priority="high",
+        )
+        self._health_check_interval = max(self._health_check_interval, 300.0)
+        self.emit(SwarmNote(message=f"spectator 标记外部依赖阻塞：{blocked}，已写入控制指令"))
+        return True
 
     async def _spectator_once(self) -> str | None:
         """让旁观者审查全局；返回 complete 时的最终退出理由。
@@ -280,6 +345,8 @@ class Coordinator:
             self.emit(SwarmNote(message=f"spectator：{review.summary}"))
         action_count = self._apply_spectator_actions(review)
         if action_count:
+            self._last_plan_created = 0
+        if self._handle_external_block(review.blocked_by_external):
             self._last_plan_created = 0
         if review.verdict == "correct" and review.instruction:
             # 非破坏性纠偏：写独立 directive，避免污染事实表。worker 下一 turn
@@ -1191,6 +1258,10 @@ class Coordinator:
                 for wid, task in list(workers.items()):
                     if task.done():
                         workers.pop(wid)
+
+                # 健康检查：每轮检查远程服务状态
+                await self._check_service_health()
+
                 # 黑板变化或并发槽长期缺货，且过冷却 → 规划。后者保证 planner
                 # 返回合法空计划后仍会周期补位，不会让 /workers 5 永久只跑 1 个。
                 version = self.board.version()

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from foxdog import runner as runner_mod
 from foxdog.executor.process import ExecResult
+from foxdog.protocol.types import ToolCallBegin, ToolCallEnd
 
 
 class FakeDockerRuntime:
@@ -110,6 +111,55 @@ async def test_build_run_wires_spectator_in_swarm_mode(tmp_path, monkeypatch):
     assert run.coordinator.spectator is not None, "swarm 模式应实例化 spectator"
     from foxdog.swarm.spectator import Spectator
     assert isinstance(run.coordinator.spectator, Spectator)
+    await runner_mod.execute_run(run)
+
+
+async def test_build_run_emit_feeds_service_health_monitor(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOXDOG_PROVIDER", "fake")
+    runtime = FakeDockerRuntime()
+    monkeypatch.setattr(runner_mod, "create_runtime", lambda *args, **kwargs: runtime)
+    events = []
+
+    run = await runner_mod.build_run(
+        "health monitor wiring",
+        "127.0.0.1:1",
+        r"flag\{[^{}]*\}",
+        [],
+        "",
+        None,
+        None,
+        None,
+        3,
+        None,
+        ["runtime.kind=docker"],
+        emit=events.append,
+        workspace=tmp_path,
+        engines_enabled=False,
+    )
+
+    run.emit(
+        ToolCallBegin(
+            call_id="health-1",
+            name="shell_exec",
+            arguments='{"command":"nc 127.0.0.1 1"}',
+            worker="worker-1",
+        )
+    )
+    run.emit(
+        ToolCallEnd(
+            call_id="health-1",
+            name="shell_exec",
+            ok=False,
+            output_preview="EOF",
+            duration_ms=12,
+            worker="worker-1",
+        )
+    )
+
+    assert run.health_monitor.failure_count == 1
+    assert run.coordinator is not None
+    assert run.coordinator.health_monitor is run.health_monitor
+    assert events[-1].kind == "tool_call_end"
     await runner_mod.execute_run(run)
 
 

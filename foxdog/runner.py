@@ -44,6 +44,7 @@ from .store.rollout import RolloutWriter
 from .store.workspace import Workspace
 from .store.writeup import generate_writeup
 from .swarm.coordinator import Coordinator
+from .swarm.health_monitor import ServiceHealthMonitor
 from .swarm.planner import ReasonPlanner
 from .swarm.worker import WorkerFactory
 from .tools import ToolContext, ToolRegistry, register_builtin_tools
@@ -121,6 +122,7 @@ class SolveRun:
     goal: GoalMode
     budget: Budget
     history: list[dict[str, Any]]
+    health_monitor: ServiceHealthMonitor
     subagents: SubAgentManager | None = None
     workers: int = 1
     coordinator: Coordinator | None = None
@@ -248,6 +250,14 @@ async def build_run(
         cfg.engines.enabled = engines_enabled
 
     ws = Workspace(base=workspace, seed_from=resume_from)
+    health_monitor = ServiceHealthMonitor(target=target)
+    user_emit = emit
+
+    def monitored_emit(event: Event) -> None:
+        health_monitor.observe_event(event)
+        user_emit(event)
+
+    emit = monitored_emit
     attachments: list[str] = []
     for src in attach or []:
         dst = ws.inputs_dir / src.name
@@ -483,6 +493,7 @@ async def build_run(
             steer=steer_q,
             interrupt=run_interrupt,
             spectator=spectator,
+            health_monitor=health_monitor,
         )
         # 异构 race 引擎：model.extra 端点 × N + claude CLI（探测/上限见 engines.plan_race_engines）
         if cfg.engines.enabled:
@@ -569,6 +580,7 @@ async def build_run(
         goal=goal,
         budget=budget,
         history=history,
+        health_monitor=health_monitor,
         subagents=subagent_manager,
         workers=workers,
         coordinator=coordinator,

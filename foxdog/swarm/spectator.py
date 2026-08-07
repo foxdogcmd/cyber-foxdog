@@ -27,6 +27,7 @@ class SpectatorReview(BaseModel):
     close_reason: str = ""
     cancel_workers: list[str] = Field(default_factory=list)
     merge_groups: list[list[str]] = Field(default_factory=list)
+    blocked_by_external: str | None = None  # 新增：外部依赖标识（如 "remote:challenge.imxbt.cn:32495"）
 
 
 _FENCE = re.compile(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", re.DOTALL)
@@ -201,12 +202,19 @@ class Spectator:
 最近事件：
 {recent}
 
-判断方向是否偏离目标、是否存在重复/危险/遗漏。只输出 JSON：
+判断方向是否偏离目标、是否存在重复/危险/遗漏。**重点识别外部依赖阻塞**：
+如果多个 worker 都卡在同一个外部服务（如远程靶机连接失败、API 超时、EOF），
+立即标记 blocked_by_external（格式："remote:host:port" 或 "api:service_name"），
+并建议暂停相关 intent，等待外部恢复或切换策略。
+
+只输出 JSON：
 verdict 必须是 "continue"、"correct"、"complete" 三者之一，不要输出枚举占位字符串。
 无动作时：
-{{"verdict":"continue","instruction":"","summary":"","confidence":0.5,"close_intents":[],"close_status":"barren","close_reason":"","cancel_workers":[],"merge_groups":[]}}
+{{"verdict":"continue","instruction":"","summary":"","confidence":0.5,"close_intents":[],"close_status":"barren","close_reason":"","cancel_workers":[],"merge_groups":[],"blocked_by_external":null}}
 需要纠偏或关闭重复方向时：
-{{"verdict":"correct","instruction":"给全队的下一步指令","summary":"给操作员的结论","confidence":0.7,"close_intents":["I3"],"close_status":"barren","close_reason":"关闭原因","cancel_workers":["worker-3"],"merge_groups":[["I12","I13"]]}}
+{{"verdict":"correct","instruction":"给全队的下一步指令","summary":"给操作员的结论","confidence":0.7,"close_intents":["I3"],"close_status":"barren","close_reason":"关闭原因","cancel_workers":["worker-3"],"merge_groups":[["I12","I13"]],"blocked_by_external":null}}
+检测到外部阻塞时：
+{{"verdict":"correct","instruction":"暂停所有远程连接 intent，优先本地验证","summary":"远程服务不可用","confidence":0.9,"close_intents":["I6","I13","I22"],"close_status":"barren","close_reason":"远程服务连续失败，EOF/timeout","cancel_workers":[],"merge_groups":[],"blocked_by_external":"remote:challenge.imxbt.cn:32495"}}
 需要关闭/合并重复 intent 时，把要关闭的 intent id 写进 close_intents；如果是一组重复 intent，merge_groups 每组保留第一个，其余由 coordinator 关闭。只关闭有明确证据覆盖或明显重复的 intent。
 complete 只在任务已完成或所有合理方向均有证据排除时使用；不要因为暂时没有新事件就 complete。"""
 

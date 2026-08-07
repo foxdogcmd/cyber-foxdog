@@ -84,16 +84,19 @@ async def test_swarm_e2e(tmp_path):
         tick=0.1,
         planner_cooldown=0.2,
     )
-    code = await coordinator.solve()
-    await background.stop_all()
-    await rollout.close()
+    try:
+        code = await coordinator.solve()
+        intents = ctx.facts.intents()
+    finally:
+        await background.stop_all()
+        await rollout.close()
+        ctx.facts.close()
 
     # 1. exit 0 + flag 正确
     assert code == EXIT_SOLVED
     assert gate.solved and gate.flag == FLAG
 
     # 2. 黑板：intent 被 planner 创建、被 worker 认领并收尾 done
-    intents = ctx.facts.intents()
     assert len(intents) == 1
     intent = intents[0]
     assert intent["status"] == "done"
@@ -109,4 +112,3 @@ async def test_swarm_e2e(tmp_path):
     records = [json.loads(l) for l in (ws.dir / "rollout.jsonl").read_text(encoding="utf-8").splitlines()]
     kinds_r = {r.get("kind") for r in records if r.get("type") == "event"}
     assert "swarm_plan" in kinds_r and "worker_start" in kinds_r
-    ctx.facts.close()
