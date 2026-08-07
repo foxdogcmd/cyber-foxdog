@@ -1,0 +1,5 @@
+name: poc-library
+description: 个人漏洞 POC 库的接入约定与模板——把新 POC 做成用户 skill、recipe 或 nuclei 模板
+when: 用户要求新增/导入漏洞 POC、积累 exploit、维护漏洞库或询问如何添加 POC 时
+requires:
+  tools: []

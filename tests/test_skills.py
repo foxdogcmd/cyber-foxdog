@@ -56,6 +56,16 @@ def test_builtin_secskills_ctf_bundle_loaded():
     assert "semgrep" in by_name["semgrep-code-audit"].missing_tools or by_name["semgrep-code-audit"].available
 
 
+def test_builtin_poc_library_skill_loaded():
+    skills = load_skills(is_tool_available=lambda n: True)
+    by_name = {s.name: s for s in skills}
+    assert "poc-library" in by_name
+    text = by_name["poc-library"].skill_md.read_text(encoding="utf-8")
+    assert "~/.config/foxdog/skills/<poc-id>/" in text
+    assert "manage_skill" in text
+    assert "nuclei" in text
+
+
 async def test_activate_skill_reads_bundle_resource(tmp_path):
     skills = load_skills(is_tool_available=lambda n: True)
     tool = ActivateSkillTool(SkillRegistry(skills))
