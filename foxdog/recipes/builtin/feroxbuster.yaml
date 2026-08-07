@@ -1,0 +1,26 @@
+name: feroxbuster
+command: feroxbuster
+short_description: 递归目录/文件扫描（feroxbuster）
+description: |
+  feroxbuster 递归目录爆破，适合 Web 目录和文件发现。
+  示例：url=http://target/ wordlist=/usr/share/seclists/Discovery/Web-Content/raft-medium-words.txt。
+  过滤噪音：extra="-fc 404 -fs 0"；并发：extra="-t 20"；递归：extra="-r -d 2"。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 目标 URL
+  - name: wordlist
+    type: string
+    required: true
+    mapping: flag
+    flag: "-w"
+    help: 字典路径
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "-t 20 -r"
+additional_args: true
+timeout: 900

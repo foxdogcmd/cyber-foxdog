@@ -1,0 +1,19 @@
+name: seccomp-tools
+command: seccomp-tools
+short_description: seccomp 规则分析（seccomp-tools）
+description: |
+  seccomp-tools 从二进制或 raw bpf 转储 seccomp 规则，用于判断可用 syscall。
+  示例：file=./challenge。
+  规则可帮助 pwn 题设计 shellcode/ORW。
+parameters:
+  - name: file
+    type: string
+    required: true
+    mapping: positional
+    help: 目标二进制路径
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "--format pretty"
+additional_args: true
+timeout: 120

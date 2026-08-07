@@ -1,0 +1,25 @@
+name: ropper
+command: ropper
+short_description: ROP gadget 搜索（ropper）
+description: |
+  ropper 从二进制里搜索 ROP gadget。
+  示例：binary=./challenge search="pop rdi ; ret"。
+  全量 gadgets：extra="--nocolor"；指定架构：extra="--arch amd64"。
+parameters:
+  - name: binary
+    type: string
+    required: true
+    mapping: flag
+    flag: "--file"
+    help: 目标二进制路径
+  - name: search
+    type: string
+    mapping: flag
+    flag: "--search"
+    help: gadget 正则，如 "pop rdi ; ret"
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 300

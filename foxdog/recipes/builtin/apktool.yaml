@@ -1,0 +1,29 @@
+name: apktool
+command: apktool
+short_description: APK 解码/回编译（apktool）
+description: |
+  apktool 解码 APK 资源、smali、manifest，常用于修改或审计。
+  示例：action=d file=app.apk output=out/。
+  回编译：action=b file=out/。
+parameters:
+  - name: action
+    type: string
+    default: d
+    mapping: positional
+    help: d=decode，b=build
+  - name: file
+    type: string
+    required: true
+    mapping: positional
+    help: APK 文件或已解码目录
+  - name: output
+    type: string
+    mapping: flag
+    flag: "-o"
+    help: 输出目录
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 900

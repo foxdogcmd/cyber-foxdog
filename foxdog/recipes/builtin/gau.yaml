@@ -1,0 +1,19 @@
+name: gau
+command: gau
+short_description: 收集已知 URL/JS 资产（gau）
+description: |
+  gau 聚合 Wayback/Common Crawl/OTX 等来源的 URL。
+  示例：target=example.com。
+  JS 过滤：extra="--subs | grep -E '\.js$'"（管道需经 shell，或先输出到文件再 grep）。
+parameters:
+  - name: target
+    type: string
+    required: true
+    mapping: positional
+    help: 目标域名，可带通配符
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 300

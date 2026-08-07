@@ -1,0 +1,20 @@
+name: arjun
+command: arjun
+short_description: 隐藏参数发现（arjun）
+description: |
+  arjun 对 Web 接口做基于字典的参数发现。
+  示例：url=http://target/api/login。
+  HTTP 方法：extra="-m POST"；自定义字典：extra="-w params.txt"。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 目标 URL
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 600

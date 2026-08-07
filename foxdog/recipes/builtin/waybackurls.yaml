@@ -1,0 +1,19 @@
+name: waybackurls
+command: waybackurls
+short_description: 收集 Wayback URL 历史（waybackurls）
+description: |
+  waybackurls 从 Wayback Machine 拉取域名历史 URL。
+  示例：target=example.com。
+  输出通常按行给 URL，可重定向到文件后继续分析。
+parameters:
+  - name: target
+    type: string
+    required: true
+    mapping: positional
+    help: 目标域名
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 300

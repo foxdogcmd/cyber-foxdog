@@ -55,10 +55,15 @@ def test_bundled_runtime_guide_is_packaged():
     dockerfile = bundled_image_dockerfile().read_text(encoding="utf-8")
     assert "COPY AGENTS.md /opt/foxdog/AGENTS.md" in dockerfile
     assert "jadx apktool android-tools-adb" in dockerfile
+    assert "proxychains4" in dockerfile and "masscan" in dockerfile
+    assert "stegseek" in dockerfile and "seccomp-tools" in dockerfile
+    assert "semgrep" in dockerfile and "objection" in dockerfile
     assert "MUTEKI_KNOWLEDGE_REF" in dockerfile
     assert "/opt/foxdog/knowledge/muteki" in dockerfile
     guide_text = guide.read_text(encoding="utf-8")
     assert "jadx" in guide_text and "apktool" in guide_text and "adb" in guide_text
+    assert "stegseek" in guide_text and "seccomp-tools" in guide_text
+    assert "proxychains4" in guide_text and "semgrep" in guide_text
     assert "/opt/foxdog/knowledge/muteki" in guide_text
 
 

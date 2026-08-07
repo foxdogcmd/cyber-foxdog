@@ -1,0 +1,24 @@
+name: dalfox
+command: dalfox
+short_description: XSS 检测与 PoC（dalfox）
+description: |
+  dalfox 对参数做 XSS 反射/盲打检测并生成 PoC。
+  示例：action=url target=http://target/search?q=test。
+  自定义 payload：extra="--custom-payload payloads.txt"；盲打：extra="--blind URL"。
+parameters:
+  - name: action
+    type: string
+    default: url
+    mapping: positional
+    help: dalfox 子命令，通常保持 url
+  - name: target
+    type: string
+    required: true
+    mapping: positional
+    help: 目标 URL
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 600

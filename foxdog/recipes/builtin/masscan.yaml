@@ -1,0 +1,31 @@
+name: masscan
+command: masscan
+short_description: 高速端口扫描（masscan）
+description: |
+  masscan 用 SYN 高速扫端口，适合大网段快速摸清开放端口。
+  示例：target=10.0.0.0/24 ports=80,443,8080 rate=1000。
+  注意：masscan 需要 root/CAP_NET_RAW；容器内可用 sudo -n。
+parameters:
+  - name: target
+    type: string
+    required: true
+    mapping: positional
+    help: 目标 IP / CIDR / 列表
+  - name: ports
+    type: string
+    required: true
+    mapping: flag
+    flag: "-p"
+    help: 端口或端口范围
+  - name: rate
+    type: integer
+    default: 1000
+    mapping: flag
+    flag: "--rate"
+    help: 发包速率
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "--output-format xml -oL scan.txt"
+additional_args: true
+timeout: 600

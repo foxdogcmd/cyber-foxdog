@@ -1,0 +1,19 @@
+name: tshark
+command: tshark
+short_description: pcap 解析/提取（tshark）
+description: |
+  tshark 分析抓包文件，提取字段、协议数据、文件对象。
+  示例：file=capture.pcap extra="-Y http -T fields -e http.host -e http.request.uri"。
+  HTTP 文件导出：extra="--export-objects http,outdir"。
+parameters:
+  - name: file
+    type: string
+    required: true
+    mapping: positional
+    help: pcap/pcapng 文件路径
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 300

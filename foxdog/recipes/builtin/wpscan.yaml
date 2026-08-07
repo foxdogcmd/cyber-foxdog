@@ -1,0 +1,25 @@
+name: wpscan
+command: wpscan
+short_description: WordPress 扫描（wpscan）
+description: |
+  wpscan 枚举 WordPress 插件/主题/用户并检测已知漏洞。
+  示例：url=https://target/ enumerate=vp,vt,u。
+  API token 可通过 extra="--api-token TOKEN" 传入；无 token 时只做基础枚举。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "--url"
+    help: WordPress 目标 URL
+  - name: enumerate
+    type: string
+    mapping: flag
+    flag: "--enumerate"
+    help: 枚举项，如 vp,vt,u
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "--random-user-agent --api-token TOKEN"
+additional_args: true
+timeout: 900

@@ -34,19 +34,22 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         `# 基础运行时与网络工具` \
         bash ca-certificates curl wget git jq ripgrep file \
         unzip p7zip-full xz-utils openssl \
-        procps util-linux sudo iproute2 dnsutils \
-        openssh-client sshpass netcat-traditional ncat socat \
+        procps util-linux sudo iproute2 dnsutils whois \
+        openssh-client sshpass netcat-traditional ncat socat proxychains4 \
         binutils gdb checksec strace ltrace \
         `# Web 扫描 / 枚举` \
-        nmap ffuf gobuster sqlmap hydra nikto \
+        nmap masscan ffuf gobuster sqlmap hydra nikto ncrack \
         feroxbuster whatweb wafw00f arjun wpscan nuclei seclists \
         `# 密码 / 哈希` \
         john hashcat \
         `# Misc / 取证` \
-        binwalk exiftool steghide foremost tshark tcpdump sleuthkit \
-        pngcheck zbar-tools \
+        binwalk exiftool steghide stegseek stegcracker stegsnow foremost \
+        tshark tcpdump sleuthkit pngcheck zbar-tools testdisk pcapfix \
+        ffmpeg sox imagemagick gifsicle apngdis multimon-ng qrencode \
+        sqlite3 xxd hexedit \
         `# Pwn / 逆向` \
         radare2 patchelf jadx apktool android-tools-adb \
+        upx-ucl qemu-user \
         `# 第二优先全家桶` \
         metasploit-framework ghidra \
         `# Ruby（zsteg/one_gadget 的 gem 宿主）` \
@@ -156,7 +159,7 @@ RUN git clone --depth 1 https://github.com/projectdiscovery/nuclei-templates.git
 # ---------------------------------------------------------------------------
 # Ruby gem 工具：zsteg / one_gadget
 # ---------------------------------------------------------------------------
-RUN gem install --no-document zsteg one_gadget
+RUN gem install --no-document zsteg one_gadget seccomp-tools
 
 # ---------------------------------------------------------------------------
 # pwninit：GitHub release 裸 ELF（非 tar），直接落 /usr/local/bin
@@ -179,11 +182,13 @@ RUN python3 -m venv /opt/foxdog-venv && \
     for i in 1 2 3 4 5; do \
       /opt/foxdog-venv/bin/pip install --no-cache-dir \
         --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-        requests httpx beautifulsoup4 lxml \
+        requests httpx beautifulsoup4 lxml pyjwt cryptography \
         pwntools pycryptodome sympy gmpy2 z3-solver \
         capstone ropgadget r2pipe \
         angr unicorn frida-tools yara-python \
-        ropper volatility3 && break || \
+        ropper volatility3 semgrep objection flask-unsign \
+        pefile oletools lief scapy dnspython dnslib Pillow numpy matplotlib \
+        qiling fpylll py_ecc && break || \
       { echo "venv pip install attempt $i failed, retrying..."; sleep 8; }; \
     done
 

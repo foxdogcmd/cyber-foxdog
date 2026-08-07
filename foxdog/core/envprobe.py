@@ -22,8 +22,15 @@ if TYPE_CHECKING:
 SECURITY_TOOLS = [
     "nmap", "ffuf", "gobuster", "dirsearch", "feroxbuster", "nikto", "sqlmap",
     "hydra", "john", "hashcat", "binwalk", "steghide", "exiftool", "zsteg",
-    "checksec", "gdb", "radare2", "tshark", "volatility3", "enum4linux-ng",
-    "nc", "ncat", "socat", "curl", "wget", "git", "docker",
+    "checksec", "gdb", "radare2", "tshark", "volatility3", "vol",
+    "enum4linux-ng", "nc", "ncat", "socat", "curl", "wget", "git", "docker",
+    "whatweb", "wafw00f", "arjun", "wpscan", "nuclei", "katana", "dalfox",
+    "gau", "waybackurls", "jadx", "apktool", "adb", "ROPgadget", "ropper",
+    "one_gadget", "pwninit", "masscan", "ncrack", "proxychains4", "whois",
+    "upx", "seccomp-tools", "ffmpeg", "sox", "convert", "magick", "gifsicle",
+    "qemu-x86_64", "testdisk", "pcapfix", "qrencode", "sqlite3", "xxd",
+    "hexedit", "apngdis", "multimon-ng", "stegsnow", "stegcracker",
+    "zbarimg", "foremost", "pngcheck",
 ]
 
 

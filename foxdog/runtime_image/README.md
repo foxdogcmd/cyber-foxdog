@@ -21,15 +21,16 @@ docker build -f foxdog/runtime_image/Dockerfile.full -t foxdog-runtime:full foxd
 
 ## 工具内容
 
-`Dockerfile.full` 不用 `kali-linux-headless` 元包，改用品类明确、版本可控的清单，避免元包拖进 AD/云/企业内网套件（netexec/responder/bloodhound 等跑题面）。当前构建磁盘占用约 20.6GB。**国内构建**：apt 源默认按 `aliyun → tuna → http.kali.org`（HTTP）顺序回退——ghidra 504MB / metasploit 270MB 大文件走 http.kali.org 重定向器实测反复断连，国内镜像稳定。
+`Dockerfile.full` 不用 `kali-linux-headless` 元包，改用品类明确、版本可控的清单，避免元包拖进 AD/云/企业内网套件（netexec/responder/bloodhound 等跑题面）。当前镜像约 22.9GB，后续新增包会随重建增长。**国内构建**：apt 源默认按 `aliyun → tuna → http.kali.org`（HTTP）顺序回退——ghidra 504MB / metasploit 270MB 大文件走 http.kali.org 重定向器实测反复断连，国内镜像稳定。
 
-- **Web 扫描/枚举**（apt）：feroxbuster、whatweb、wafw00f、arjun、wpscan、nuclei、nmap、ffuf、gobuster、sqlmap、hydra、nikto
+- **Web 扫描/枚举**（apt）：feroxbuster、whatweb、wafw00f、arjun、wpscan、nuclei、nmap、masscan、ffuf、gobuster、sqlmap、hydra、ncrack、nikto
 - **字典/密码**（apt）：seclists、john、hashcat
 - **URL/JS/资产**：katana、dalfox（GitHub release 二进制）、gau、waybackurls（go install，GOPATH=/opt/go）、nuclei-templates（clone 到 `/opt/nuclei-templates`）
-- **Misc/取证**（apt）：binwalk、exiftool、steghide、foremost、tshark、tcpdump、sleuthkit、pngcheck、zbar-tools；volatility3（venv pip，`vol`）
-- **Pwn/逆向/APK**（apt + release + gem + venv）：radare2、patchelf、jadx、apktool、android-tools-adb、gdb+gef、checksec、strace、ltrace；pwninit（release 裸 ELF）；zsteg、one_gadget（gem）；ropper、ROPgadget（venv）
+- **Misc/取证**（apt）：binwalk、exiftool、steghide、stegseek、stegcracker、stegsnow、foremost、tshark、tcpdump、sleuthkit、pngcheck、zbar-tools、testdisk、pcapfix、ffmpeg、sox、imagemagick、gifsicle、apngdis、multimon-ng、qrencode、sqlite3、xxd、hexedit；volatility3（venv pip，`vol`）
+- **Pwn/逆向/APK**（apt + release + gem + venv）：radare2、patchelf、jadx、apktool、android-tools-adb、gdb+gef、checksec、strace、ltrace、seccomp-tools、upx、qemu-user；pwninit（release 裸 ELF）；zsteg、one_gadget（gem）；ropper、ROPgadget（venv）
+- **网络/代理**（apt）：proxychains4、whois、sshpass、socat
 - **全家桶**：metasploit-framework、ghidra、maxima-sage，以及 conda-forge 的 SageMath 10.9（`sage`）
-- **Python exploit 栈**（`/opt/foxdog-venv`，PATH 置顶，与 Kali deb 版隔离）：pwntools、pycryptodome、sympy、gmpy2、z3-solver、capstone、angr、unicorn、r2pipe、frida-tools、yara-python、ropper、ROPgadget、volatility3
+- **Python exploit 栈**（`/opt/foxdog-venv`，PATH 置顶，与 Kali deb 版隔离）：pwntools、pycryptodome、sympy、gmpy2、z3-solver、capstone、angr、unicorn、r2pipe、frida-tools、yara-python、ropper、ROPgadget、volatility3、semgrep、objection、flask-unsign、pefile、oletools、lief、scapy、dnspython、dnslib、Pillow、numpy、matplotlib、qiling、fpylll、py_ecc、pyjwt、cryptography
 
 Sage 安装在 `/opt/conda`。Miniforge 安装包固定版本和 SHA256，并通过 BuildKit cache mount + `curl --continue-at -` 断点续传；conda 包走清华 conda-forge 镜像并缓存到 `/opt/conda/pkgs`，网络失败后重建可复用已下载内容。
 

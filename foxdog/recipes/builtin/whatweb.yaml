@@ -1,0 +1,19 @@
+name: whatweb
+command: whatweb
+short_description: Web 技术栈指纹识别（whatweb）
+description: |
+  whatweb 识别服务器、框架、CMS、JS 库等指纹。
+  示例：target=http://target/。
+  详细：extra="-a 3"；批量：target=urls.txt。
+parameters:
+  - name: target
+    type: string
+    required: true
+    mapping: positional
+    help: 目标 URL 或 URL 列表文件
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 300

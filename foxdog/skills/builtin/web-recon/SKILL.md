@@ -45,7 +45,7 @@ index.php/.  index.php%00  #index.php#（vim 崩溃恢复文件）
 
 确认过手动途径没货再爆破，**先把字典挑对**（技术栈决定扩展名）：
 
-- 有 select_tools：先 `select_tools()` 看有没有 dirsearch/ffuf/gobuster，
+- 有 select_tools：先 `select_tools()` 看有没有 dirsearch/ffuf/gobuster/feroxbuster/nuclei/arjun，
   激活后用配方跑（后台跑长任务：`select_tools` 激活 → 调用配方工具）。
 - 字典顺序：小（common.txt 千级）→ 中（raft-medium 万级）→ 大。
   扩展名单子：按指纹给 `php,html,bak,txt,zip,sql,conf,json,log`。

@@ -82,11 +82,17 @@ def test_load_with_path_injection(tmp_path, monkeypatch):
 
 
 def test_builtin_recipes_parse():
-    """内置 10 个配方全部能解析（本机装没装不影响解析）。"""
+    """内置配方全部能解析（本机装没装不影响解析）。"""
     recipes, skipped = load_recipes(user_dir=Path("/nonexistent-foxdog-test"))
     loaded = {r.name for r in recipes}
     skipped_names = {s.split("（")[0] for s in skipped}
-    expected = {"nmap_scan", "ffuf", "gobuster", "sqlmap", "hydra", "john", "hashcat", "binwalk", "nikto", "dirsearch"}
+    expected = {
+        "nmap_scan", "ffuf", "gobuster", "sqlmap", "hydra", "john", "hashcat",
+        "binwalk", "nikto", "dirsearch", "feroxbuster", "nuclei", "whatweb",
+        "wpscan", "arjun", "katana", "dalfox", "gau", "waybackurls",
+        "exiftool", "tshark", "jadx", "apktool", "ropper", "ropgadget",
+        "masscan", "stegseek", "seccomp-tools",
+    }
     assert expected <= loaded | skipped_names
 
 

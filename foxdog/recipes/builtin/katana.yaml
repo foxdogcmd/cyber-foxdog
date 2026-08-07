@@ -1,0 +1,20 @@
+name: katana
+command: katana
+short_description: Web 爬虫/端点发现（katana）
+description: |
+  katana 爬取页面并收集 URL、JS 端点、参数。
+  示例：url=http://target/。
+  深度：extra="-d 2"；JS 解析：extra="-jc"；表单填充：extra="-ef"。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 目标 URL
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 600

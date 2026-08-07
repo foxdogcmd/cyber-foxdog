@@ -1,0 +1,24 @@
+name: jadx
+command: jadx
+short_description: APK/DEX 反编译（jadx）
+description: |
+  jadx 将 APK/DEX 反编译为 Java 源码和资源。
+  示例：file=app.apk output=out/。
+  默认输出目录可省；反编译失败时可试 extra="--no-res" 或 "--deobf"。
+parameters:
+  - name: file
+    type: string
+    required: true
+    mapping: positional
+    help: APK/DEX/JAR 文件路径
+  - name: output
+    type: string
+    mapping: flag
+    flag: "-d"
+    help: 输出目录
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 900

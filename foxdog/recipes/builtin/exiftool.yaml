@@ -1,0 +1,19 @@
+name: exiftool
+command: exiftool
+short_description: 文件元数据提取/修改（exiftool）
+description: |
+  exiftool 读图片、PDF、Office 等文件元数据；也能提取内嵌缩略图或改写元数据。
+  示例：file=challenge.png。
+  全量结构：extra="-v3"；提取缩略图：extra="-b -ThumbnailImage -w thumb.jpg"。
+parameters:
+  - name: file
+    type: string
+    required: true
+    mapping: positional
+    help: 目标文件路径
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 120

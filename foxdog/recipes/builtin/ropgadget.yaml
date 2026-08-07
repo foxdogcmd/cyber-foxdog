@@ -1,0 +1,20 @@
+name: ropgadget
+command: ROPgadget
+short_description: ROP gadget 搜索（ROPgadget）
+description: |
+  ROPgadget 搜索二进制 ROP/JOP/SYS 等 gadget。
+  示例：binary=./challenge extra="--only 'pop|ret'"。
+  全部输出：extra="--all"；指定深度：extra="--depth 8"。
+parameters:
+  - name: binary
+    type: string
+    required: true
+    mapping: flag
+    flag: "--binary"
+    help: 目标二进制路径
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 300

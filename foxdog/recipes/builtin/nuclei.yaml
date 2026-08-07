@@ -1,0 +1,30 @@
+name: nuclei
+command: nuclei
+short_description: 模板化漏洞扫描（nuclei）
+description: |
+  nuclei 基于模板做漏洞探测。容器内模板位于 /opt/nuclei-templates。
+  示例：url=http://target/ templates=/opt/nuclei-templates/ severity=high,critical。
+  模板目录可不传，默认用 nuclei 内置模板路径；建议先按类别或严重度限定，避免全量模板跑太久。
+parameters:
+  - name: url
+    type: string
+    required: true
+    mapping: flag
+    flag: "-u"
+    help: 目标 URL 或列表文件
+  - name: templates
+    type: string
+    mapping: flag
+    flag: "-t"
+    help: 模板目录/文件，如 /opt/nuclei-templates/cves/
+  - name: severity
+    type: string
+    mapping: flag
+    flag: "-severity"
+    help: 按严重度过滤，如 critical,high
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串，如 "-rate-limit 20 -o results.txt"
+additional_args: true
+timeout: 900

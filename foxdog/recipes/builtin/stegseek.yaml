@@ -1,0 +1,23 @@
+name: stegseek
+command: stegseek
+short_description: steghide 快速爆破（stegseek）
+description: |
+  stegseek 用字典快速爆破 steghide 加密的 jpg。
+  示例：file=challenge.jpg wordlist=/usr/share/seclists/Passwords/rockyou.txt。
+  已知密码：extra="--passphrase secret"；seed 模式：extra="--seed"。
+parameters:
+  - name: file
+    type: string
+    required: true
+    mapping: positional
+    help: 隐写文件路径
+  - name: wordlist
+    type: string
+    mapping: positional
+    help: 密码字典路径
+  - name: extra
+    type: string
+    mapping: combined
+    help: 其他选项串
+additional_args: true
+timeout: 900

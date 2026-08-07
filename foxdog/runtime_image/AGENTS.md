@@ -26,10 +26,12 @@
 ## 工具可用性
 
 - 先用 `which <tool>` 或 `<tool> --help` 确认可用性，不要凭记忆断言缺工具。
-- 常见 Web 工具：`nmap`、`ffuf`、`feroxbuster`、`gobuster`、`whatweb`、`wafw00f`、`arjun`、`wpscan`、`nuclei`、`nikto`、`sqlmap`、`hydra`、`katana`、`gau`、`waybackurls`、`dalfox`。
-- 常见 Pwn / Rev 工具：`checksec`、`gdb` + GEF、`radare2`、`ROPgadget`、`ropper`、`one_gadget`、`pwninit`、`patchelf`、`strace`、`ltrace`、`ghidra`、`jadx`、`apktool`、`adb`。
+- 常见 Web 工具：`nmap`、`masscan`、`ffuf`、`feroxbuster`、`gobuster`、`whatweb`、`wafw00f`、`arjun`、`wpscan`、`nuclei`、`nikto`、`sqlmap`、`hydra`、`ncrack`、`katana`、`gau`、`waybackurls`、`dalfox`。
+- 常见 Pwn / Rev 工具：`checksec`、`gdb` + GEF、`radare2`、`ROPgadget`、`ropper`、`one_gadget`、`pwninit`、`patchelf`、`strace`、`ltrace`、`seccomp-tools`、`upx`、`qemu-user`、`ghidra`、`jadx`、`apktool`、`adb`。
 - 常见 Crypto / Python 栈：`python3`、`pwntools`、`pycryptodome`、`sympy`、`gmpy2`、`z3`、`angr`、`unicorn`、`r2pipe`、`sage`。
-- 常见 Misc / Forensics 工具：`binwalk`、`exiftool`、`steghide`、`foremost`、`tshark`、`tcpdump`、`sleuthkit`、`pngcheck`、`zbarimg`、`vol`。
+- 常见 Misc / Forensics 工具：`binwalk`、`exiftool`、`steghide`、`stegseek`、`stegcracker`、`stegsnow`、`foremost`、`tshark`、`tcpdump`、`sleuthkit`、`pngcheck`、`zbarimg`、`testdisk`、`pcapfix`、`ffmpeg`、`sox`、`convert`、`gifsicle`、`apngdis`、`multimon-ng`、`qrencode`、`sqlite3`、`xxd`、`hexedit`、`vol`。
+- 网络 / 代理：`proxychains4`、`whois`、`sshpass`、`socat`。
+- Python 栈额外可用：`semgrep`、`objection`、`flask-unsign`、`pefile`、`oletools`、`lief`、`scapy`、`dnspython`、`dnslib`、`Pillow`、`numpy`、`matplotlib`、`qiling`、`fpylll`、`py_ecc`、`pyjwt`、`cryptography`。
 - Nuclei templates 在 `/opt/nuclei-templates` 和 `/usr/local/share/nuclei-templates`。
 - PATH 已把 `/opt/foxdog-venv/bin` 和 `/opt/go/bin` 放前面。不要用 `bash -lc` 做工具探测；login shell 可能重置 PATH。
 
