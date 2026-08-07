@@ -25,6 +25,7 @@ from ...llm.model_catalog import fetch_model_ids
 from ...swarm.claude_config import ClaudeConfigError, default_claude_settings_path, load_claude_code_env
 from ...skills.loader import USER_DIR, _synth_manifest
 from .. import Tool, ToolAccess, ToolContext, ToolResult
+from .poc_library import ListPocsTool, SavePocTool
 
 DEEPSEEK_MODELS_URL = "https://api.deepseek.com/models"
 
@@ -653,5 +654,7 @@ def register_config_tools(registry, store: ConfigStore, secrets: SecretVault | N
         SetAgentTool(store),
         ConfigureClaudeCodeTool(store),
         ManageSkillTool(store),
+        SavePocTool(),
+        ListPocsTool(),
     ):
         registry.register(tool)

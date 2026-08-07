@@ -6,6 +6,28 @@ CVE/POC 数据库。新 POC 应该优先放进用户级 skill，这样不会随�
 
 ## 最便捷路径：一个 POC 一个用户 skill
 
+主解题和 `/setting` 环境里都可以直接调 `save_poc` 生成用户 skill：
+
+```text
+save_poc(
+  name="cve-2024-xxxx",
+  title="...",
+  cve="CVE-2024-xxxx",
+  product="...",
+  vuln_type="RCE",
+  description="适用条件、利用思路",
+  evidence="真实工具输出片段",
+  poc_code="...",
+  references=["https://..."],
+  requires_tools=["python3"]
+)
+```
+
+保存后新任务会自动发现，用 `activate_skill(name="cve-2024-xxxx")` 检索。
+先 `list_pocs` 查重，避免同名覆盖。
+
+## 手工路径：一个 POC 一个用户 skill
+
 准备目录：
 
 ```text

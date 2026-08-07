@@ -210,6 +210,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     from .builtin.answer import SubmitAnswerTool
     from .builtin.http import HttpRequestTool
     from .builtin.meta import FetchOutputTool, TaskListTool, TaskOutputTool, TaskStopTool
+    from .builtin.poc_library import ListPocsTool, SavePocTool
     from .builtin.python_repl import PythonEvalTool
     from .builtin.session import ShellSessionTool
     from .builtin.shell import ShellExecTool
@@ -238,5 +239,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         TaskListTool(),
         TaskOutputTool(),
         TaskStopTool(),
+        SavePocTool(),
+        ListPocsTool(),
     ):
         registry.register(tool)
