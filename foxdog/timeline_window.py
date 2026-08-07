@@ -21,6 +21,7 @@ mount(before=0) 引发的 scroll_y 变化递归回裁剪。
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -31,13 +32,15 @@ from textual.widgets import Static
 
 # 计数兜底：最多保留这么多已挂载条目（防超长任务把树撑大）。
 # 每条是独立 widget，Textual layout 成本 ∝ 挂载 widget 数；滚动视口不需要保留整场历史。
-_MAX_MOUNTED = 96
+_MAX_MOUNTED = 64
 # 每轮裁剪把挂载数降到 _MAX_MOUNTED - _TRIM_BATCH，避免每 append 都触发裁剪（迟滞）。
 _TRIM_BATCH = 24
 # 每个裁剪切片最多卸载的 widget 数。保持极小值，避免滚轮期间出现周期性长帧。
-_TRIM_SLICE = 4
+_TRIM_SLICE = 2
 # 分片裁剪间隔；独立于 Textual 是否触发下一次 repaint，保证后台回收能追上。
-_TRIM_INTERVAL = 0.02
+_TRIM_INTERVAL = 0.03
+_SCROLL_IDLE_GRACE = 0.35
+_SCROLL_TRIM_DEFER = 0.12
 # 内部历史快照保留的最大字符数（屏幕只渲染摘要）；超出丢最旧。
 _HISTORY_MAX_CHARS = 60_000
 _HISTORY_ENTRY_MAX_CHARS = 1_200
@@ -51,6 +54,16 @@ class TimelineScroll(VerticalScroll):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._anchor_check_scheduled = False
+        self._user_scroll_until = 0.0
+
+    def _mark_user_scroll(self) -> None:
+        self._user_scroll_until = time.monotonic() + _SCROLL_IDLE_GRACE
+
+    def is_user_scrolling(self) -> bool:
+        return time.monotonic() < self._user_scroll_until
+
+    def clear_user_scroll(self) -> None:
+        self._user_scroll_until = 0.0
 
     def _schedule_anchor_check(self) -> None:
         """Coalesce a burst of wheel events into one post-layout anchor check."""
@@ -76,10 +89,12 @@ class TimelineScroll(VerticalScroll):
         # the bottom, that made every wheel movement snap straight back. A
         # wheel gesture is an explicit user navigation, so release the follow
         # anchor before delegating to the normal scroll implementation.
+        self._mark_user_scroll()
         self.release_anchor()
         super()._on_mouse_scroll_up(event)
 
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self._mark_user_scroll()
         self.release_anchor()
         super()._on_mouse_scroll_down(event)
         self._schedule_anchor_check()
@@ -220,8 +235,9 @@ class TimelineWindowizer:
         if self._trim_scheduled or self._trimming or not self._container_live():
             return
         self._trim_scheduled = True
+        interval = _SCROLL_TRIM_DEFER if self._user_scroll_active() else _TRIM_INTERVAL
         try:
-            self._container.set_timer(_TRIM_INTERVAL, self._trim_oldest, name="timeline-trim")
+            self._container.set_timer(interval, self._trim_oldest, name="timeline-trim")
             scheduled = True
         except Exception:
             scheduled = False
@@ -237,6 +253,9 @@ class TimelineWindowizer:
         """
         self._trim_scheduled = False
         if self._trimming or not self._container_live():
+            return
+        if self._user_scroll_active():
+            self._schedule_trim()
             return
         target = _MAX_MOUNTED - _TRIM_BATCH
         if self._mounted_count <= target:
@@ -299,6 +318,15 @@ class TimelineWindowizer:
                 self._history = None
         else:
             self._history.update(body, layout=False)
+
+    def _user_scroll_active(self) -> bool:
+        checker = getattr(self._container, "is_user_scrolling", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return False
 
     def _history_body(self) -> Text:
         tail = " ".join(self._history_text.split())[-_HISTORY_RENDER_TAIL_CHARS:]

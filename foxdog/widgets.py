@@ -28,6 +28,7 @@ TAIL_LIMIT = 200  # 单条文本尾部折叠长度
 _SPINNER = "⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓"
 FILE_PREVIEW_LINES = 10
 REASONING_BUFFER_CHARS = 6000
+TOOL_SPINNER_INTERVAL = 0.25
 _ANSI_ESCAPE_RE = re.compile(
     r"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x9d[^\x07]*(?:\x07|\x1b\\)|"
     r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\x9b[0-?]*[ -/]*[@-~])"
@@ -544,11 +545,18 @@ class ToolCallRow(Vertical):
 
     def on_mount(self) -> None:
         if self.ok is None:  # 进行中：行尾 spinner
-            self._spin_timer = self.set_interval(0.1, self._tick)
+            self._spin_timer = self.set_interval(TOOL_SPINNER_INTERVAL, self._tick)
 
     def _tick(self) -> None:
         if not self.is_mounted:
             return
+        try:
+            timeline = self.app.query_one("#timeline")
+            checker = getattr(timeline, "is_user_scrolling", None)
+            if callable(checker) and checker():
+                return
+        except Exception:
+            pass
         self._spin = (self._spin + 1) % len(_SPINNER)
         self.query_one(".tc-summary", Static).update(self._summary(), layout=False)
 

@@ -392,6 +392,72 @@ async def test_wheel_anchor_checks_are_coalesced(tmp_path, monkeypatch):
         await pilot.pause(0.3)
 
 
+async def test_timeline_trim_defers_during_wheel_scroll(tmp_path, monkeypatch):
+    """Wheel scrolling should not compete with trim remove/update work."""
+    from foxdog.timeline_window import _MAX_MOUNTED, _TRIM_BATCH
+
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.5)
+        timeline = app.query_one("#timeline")
+        windowizer = app._timeline_windowizer
+
+        timeline._mark_user_scroll()
+        for i in range(_MAX_MOUNTED + 20):
+            app._write_line(f"scroll trim line {i}")
+        await pilot.pause(0.2)
+
+        assert timeline.is_user_scrolling()
+        assert windowizer._mounted_count > _MAX_MOUNTED
+        assert windowizer._history is None
+
+        timeline.clear_user_scroll()
+        deadline = time.monotonic() + 5
+        target = _MAX_MOUNTED - _TRIM_BATCH
+        while time.monotonic() < deadline and windowizer._mounted_count > target:
+            await pilot.pause(0.1)
+        assert windowizer._mounted_count <= target
+        assert windowizer._history is not None
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
+async def test_stream_render_defers_during_wheel_scroll(tmp_path, monkeypatch):
+    """During a wheel gesture, stream deltas are buffered without re-rendering the block."""
+    app = _app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        app._queue.put(AgentMessageDelta(delta="start", request_id="scroll-buffer"))
+        await app._pump_events()
+        timeline = app.query_one("#timeline")
+        block = app.query_one(AgentStreamBlock)
+        body = block.query_one(".agent-text", Static)
+        original_update = body.update
+        updates = 0
+
+        def counted_update(*args, **kwargs):
+            nonlocal updates
+            updates += 1
+            return original_update(*args, **kwargs)
+
+        monkeypatch.setattr(body, "update", counted_update)
+        timeline._mark_user_scroll()
+        for _ in range(40):
+            app._queue.put(AgentMessageDelta(delta=" x", request_id="scroll-buffer"))
+        await app._pump_events()
+
+        assert updates == 0
+        assert app._stream_raw[(None, "scroll-buffer")] == "start"
+        assert (None, "scroll-buffer") not in app._pending_stream_updates
+
+        timeline.clear_user_scroll()
+        await app._pump_events()
+        assert updates == 1
+        assert body.render().plain.endswith("start" + " x" * 40)
+        _submit(app, "/quit")
+        await pilot.pause(0.3)
+
+
 async def test_reasoning_token_appends_are_buffered(tmp_path, monkeypatch):
     """Long reasoning streams avoid quadratic string concatenation per token."""
     app = _app(tmp_path, monkeypatch)

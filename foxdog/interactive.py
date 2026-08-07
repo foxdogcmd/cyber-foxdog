@@ -722,6 +722,7 @@ class ChatApp(App):
         self._todos_visible = False
         self._board_signature: str | None = None
         self._activity = ""  # spinner 状态行的当前活动描述
+        self._activity_rendered: tuple[str, bool, bool] | None = None
         self._activity_started_at = time.monotonic()
         self._activity_frame = 0
         self._activity_timer: Timer | None = None
@@ -896,6 +897,9 @@ class ChatApp(App):
 
     def _tick_half_second(self) -> None:
         """0.5s 一拍：spinner 状态行、快捷键栏、jump 提示、todo 区。"""
+        if self._timeline_scroll_active():
+            self._refresh_activity()
+            return
         self._refresh_activity()
         self._refresh_shortcuts()
         self._sync_board_sidebar()
@@ -906,6 +910,8 @@ class ChatApp(App):
     def _tick_activity_animation(self) -> None:
         """Fast refresh only while work is active; idle sessions keep the timer paused."""
         if not (self.busy or self._setting_busy):
+            return
+        if self._timeline_scroll_active():
             return
         self._activity_frame = (self._activity_frame + 1) % len(_ACTIVITY_SPINNER)
         self._refresh_activity()
@@ -1021,6 +1027,9 @@ class ChatApp(App):
 
     # ------------------------------------------------------------ 事件泵（VerticalScroll 时间线）
     async def _pump_events(self) -> None:
+        if self._timeline_scroll_active():
+            self._commit_stream_updates(render=False)
+            return
         processed = 0
         while processed < _EVENT_PUMP_LIMIT:
             try:
@@ -1448,8 +1457,10 @@ class ChatApp(App):
         self._stream_parts.pop(key, None)
         self._pending_stream_updates.discard(key)
 
-    def _commit_stream_update(self, key: tuple[str | None, str]) -> None:
+    def _commit_stream_update(self, key: tuple[str | None, str], *, render: bool = True) -> None:
         widget = self._stream_widgets.get(key)
+        if not render:
+            return
         parts = self._stream_parts.pop(key, None)
         if parts:
             self._stream_raw[key] = self._stream_raw.get(key, "") + "".join(parts)
@@ -1458,9 +1469,9 @@ class ChatApp(App):
             widget.set_body(raw)
         self._pending_stream_updates.discard(key)
 
-    def _commit_stream_updates(self) -> None:
+    def _commit_stream_updates(self, *, render: bool = True) -> None:
         for key in tuple(self._pending_stream_updates):
-            self._commit_stream_update(key)
+            self._commit_stream_update(key, render=render)
 
     def _agent_render(self, raw: str, worker: str | None = None) -> Text:
         """agent 文本：● 前缀 + 内联代码橙色 + 粗体（轻量着色，流式安全）。"""
@@ -1483,6 +1494,30 @@ class ChatApp(App):
             if self.is_mounted:
                 self._refresh_activity()
 
+    def _timeline_scroll_active(self) -> bool:
+        if self._setting_page:
+            return False
+        try:
+            tl = self.query_one("#timeline", VerticalScroll)
+        except Exception:
+            return False
+        checker = getattr(tl, "is_user_scrolling", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return False
+
+    def _update_activity_line(self, widget: Static, text: str, *, jump: bool, display: bool) -> None:
+        signature = (text, jump, display)
+        if signature == self._activity_rendered:
+            return
+        self._activity_rendered = signature
+        widget.styles.display = "block" if display else "none"
+        widget.set_class(jump, "jump")
+        widget.update(text, layout=False)
+
     # ------------------------------------------------------------ spinner 状态行 / 快捷键栏 / jump 提示 / todo 区
     def _refresh_activity(self) -> None:
         """按需显示活动行：上翻提示或解题状态；空闲时不占 composer 高度。"""
@@ -1491,11 +1526,11 @@ class ChatApp(App):
             tl = self.query_one("#timeline", VerticalScroll)
         except Exception:
             return
-        scrolled_up = tl.max_scroll_y > 0 and not tl.is_vertical_scroll_end
+        scroll_y = getattr(tl, "scroll_y", 0)
+        max_scroll_y = getattr(tl, "max_scroll_y", 0)
+        scrolled_up = max_scroll_y > 0 and scroll_y < max_scroll_y - 0.5
         if scrolled_up:
-            w.styles.display = "block"
-            w.set_class(True, "jump")
-            w.update("Jump to bottom (ctrl+End) ↓", layout=False)
+            self._update_activity_line(w, "Jump to bottom (ctrl+End) ↓", jump=True, display=True)
             return
         try:
             # Avoid forcing an immediate scroll/layout on every 200ms spinner
@@ -1504,22 +1539,21 @@ class ChatApp(App):
                 tl.anchor()
         except Exception:
             pass
-        w.set_class(False, "jump")
         if self.busy and self.current_run is not None:
             run = self.current_run
             elapsed = _fmt_duration(time.monotonic() - getattr(run, "started", time.monotonic()))
             phase_elapsed = _fmt_duration(time.monotonic() - self._activity_started_at)
             state = getattr(getattr(run, "loop", None), "budget_state", None)
             tokens = state.total_tokens if state is not None else 0
-            w.styles.display = "block"
             spinner = _ACTIVITY_SPINNER[self._activity_frame]
-            w.update(
+            self._update_activity_line(
+                w,
                 f"{spinner} {self._activity or '思考中'} · {phase_elapsed} · 总用时 {elapsed} · ↓ {tokens} tokens",
-                layout=False,
+                jump=False,
+                display=True,
             )
         else:
-            w.update("", layout=False)
-            w.styles.display = "none"
+            self._update_activity_line(w, "", jump=False, display=False)
 
     def _refresh_shortcuts(self) -> None:
         try:
@@ -1565,8 +1599,12 @@ class ChatApp(App):
 
     def action_jump_bottom(self) -> None:
         tl = self.query_one("#timeline", VerticalScroll)
+        clear_scroll = getattr(tl, "clear_user_scroll", None)
+        if callable(clear_scroll):
+            clear_scroll()
         tl.scroll_end(animate=False)
         tl.anchor()  # 重新锚定
+        self._commit_stream_updates()
         self._refresh_activity()
 
     def on_click(self, event) -> None:
