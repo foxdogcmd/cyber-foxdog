@@ -45,6 +45,17 @@ def test_builtin_reverse_skill_bundle_loaded():
     assert (by_name["apk-reverse"].resource_root / "LICENSE").is_file()
 
 
+def test_builtin_secskills_ctf_bundle_loaded():
+    skills = load_skills(is_tool_available=lambda n: True)
+    by_name = {s.name: s for s in skills}
+    for name in ("ctf-web", "ctf-crypto", "ctf-pwn", "ctf-forensics", "ctf-misc", "ctf-reverse"):
+        assert name in by_name, f"missing builtin ctf skill {name}"
+        assert by_name[name].resource_root.name == "secskills-ctf"
+        assert (by_name[name].resource_root / "LICENSE").is_file()
+    assert "semgrep-code-audit" in by_name
+    assert "semgrep" in by_name["semgrep-code-audit"].missing_tools or by_name["semgrep-code-audit"].available
+
+
 async def test_activate_skill_reads_bundle_resource(tmp_path):
     skills = load_skills(is_tool_available=lambda n: True)
     tool = ActivateSkillTool(SkillRegistry(skills))

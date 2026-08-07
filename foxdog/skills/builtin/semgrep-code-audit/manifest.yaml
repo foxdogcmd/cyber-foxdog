@@ -1,0 +1,6 @@
+name: semgrep-code-audit
+description: 用 Semgrep 对源码做安全扫描，覆盖漏洞、密钥泄露、OWASP Top 10 和常见语言规则集
+when: 拿到源码/项目目录需要代码审计、漏洞检测、密钥扫描或安全规则检查时
+requires:
+  tools:
+    - semgrep
